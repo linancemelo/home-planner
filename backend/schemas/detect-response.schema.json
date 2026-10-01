@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://linancemelo.github.io/home-planner/schemas/detect-response.json",
+  "title": "DetectResponse",
+  "description": "POST /api/v1/detect response. Metres, bottom-left origin. Aligns with frontend Floorplan + rooms.",
+  "type": "object",
+  "required": [
+    "version",
+    "kind",
+    "meta",
+    "walls",
+    "doors",
+    "windows",
+    "rooms"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "detect-result"
+    },
+    "meta": {
+      "type": "object",
+      "required": [
+        "sourceName",
+        "imageWidthPx",
+        "imageHeightPx",
+        "metersPerPixel",
+        "scaleTrusted",
+        "coordinateOrigin",
+        "ceilingHeightM",
+        "ceilingHeightAssumed"
+      ],
+      "properties": {
+        "sourceName": {
+          "type": "string"
+        },
+        "imageWidthPx": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "imageHeightPx": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "metersPerPixel": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "scaleTrusted": {
+          "const": false
+        },
+        "coordinateOrigin": {
+          "enum": [
+            "bottom-left",
+            "top-left"
+          ]
+        },
+        "ceilingHeightM": {
+          "type": "number"
+        },
+        "ceilingHeightAssumed": {
+          "const": true
+        },
+        "detectionConfidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "units": {
+          "const": "meters"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "walls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Wall"
+      }
+    },
+    "doors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Door"
+      }
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Window"
+      }
+    },
+    "rooms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Room"
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "mock": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "Vec2": {
+      "type": "object",
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "Segment": {
+      "type": "object",
+      "required": [
+        "a",
+        "b"
+      ],
+      "properties": {
+        "a": {
+          "$ref": "#/$defs/Vec2"
+        },
+        "b": {
+          "$ref": "#/$defs/Vec2"
+        }
+      }
+    },
+    "Wall": {
+      "type": "object",
+      "required": [
+        "id",
+        "a",
+        "b",
+        "thicknessM"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "a": {
+          "$ref": "#/$defs/Vec2"
+        },
+        "b": {
+          "$ref": "#/$defs/Vec2"
+        },
+        "thicknessM": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "thicknessAssumed": {
+          "type": "boolean"
+        },
+        "heightM": {
+          "type": "number"
+        }
+      }
+    },
+    "Door": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "wallId",
+        "opening"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "swing",
+            "sliding"
+          ]
+        },
+        "wallId": {
+          "type": "string"
+        },
+        "opening": {
+          "$ref": "#/$defs/Segment"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "swing": {
+          "type": "object"
+        },
+        "sliding": {
+          "type": "object"
+        }
+      }
+    },
+    "Window": {
+      "type": "object",
+      "required": [
+        "id",
+        "wallId",
+        "opening"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "wallId": {
+          "type": "string"
+        },
+        "opening": {
+          "$ref": "#/$defs/Segment"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "sillHeightM": {
+          "type": "number"
+        },
+        "sillHeightAssumed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Room": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "vertices"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "description": "e.g. 客廳"
+        },
+        "vertices": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "$ref": "#/$defs/Vec2"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}

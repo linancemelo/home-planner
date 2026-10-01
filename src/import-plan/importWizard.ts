@@ -1,6 +1,11 @@
 /**
  * 「從平面圖建立」wizard helpers (繁中).
  * DOM lives in the studio shell; this module drives detect → overlay → confirm.
+ *
+ * Path priority when VITE_DETECT_API_URL is set (default http://127.0.0.1:8000):
+ *   1) Backend mock Detect API → full Floorplan JSON
+ *   2) On failure: heuristic detect → (optional) AI proposal → assemble
+ * Set VITE_DETECT_API_URL=off (or empty) to skip backend and stay offline.
  */
 import { detectFloorplan } from "./detect/pipeline.ts"
 import { imageElementToSource, loadImageElement } from "./load-image.ts"
@@ -13,6 +18,11 @@ import {
   type AssembleResult,
   type AssembleUiMode,
 } from "./ai/index.ts"
+import {
+  isDetectApiConfigured,
+  mapDetectResponseToFloorplan,
+  postDetectImage,
+} from "./backend/index.ts"
 
 export type ImportWizardCallbacks = {
   onConfirm: (blueprint: PlanBlueprint) => void
@@ -20,6 +30,22 @@ export type ImportWizardCallbacks = {
   /** Return false to abort confirm (e.g. user declined replace). */
   confirmReplace?: () => boolean
   hasCustomBlueprint?: () => boolean
+}
+
+function modeBadgeLabel(mode: AssembleUiMode): string {
+  if (mode === "backend") return "後端 mock"
+  if (mode === "ai+rules") return "AI+規則"
+  return "啟發式"
+}
+
+function modeBadgeTitle(mode: AssembleUiMode): string {
+  if (mode === "backend") {
+    return "本機 Detect API（mock JSON；尚未 YOLO）。失敗時會回退啟發式／AI。"
+  }
+  if (mode === "ai+rules") {
+    return "已設定 AI 金鑰：提案 + 規則組裝（非最終 Floorplan JSON）"
+  }
+  return "離線啟發式偵測 + 規則組裝（未設定 VITE_OPENAI_API_KEY / VITE_GEMINI_API_KEY）"
 }
 
 export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): () => void {
@@ -49,13 +75,10 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
     uiMode = mode
     if (!modeBadge) return
     modeBadge.dataset.mode = mode
-    modeBadge.textContent = mode === "ai+rules" ? "AI+規則" : "啟發式"
-    modeBadge.title =
-      mode === "ai+rules"
-        ? "已設定 AI 金鑰：提案 + 規則組裝（非最終 Floorplan JSON）"
-        : "離線啟發式偵測 + 規則組裝（未設定 VITE_OPENAI_API_KEY / VITE_GEMINI_API_KEY）"
+    modeBadge.textContent = modeBadgeLabel(mode)
+    modeBadge.title = modeBadgeTitle(mode)
   }
-  setModeBadge("heuristic")
+  setModeBadge(isDetectApiConfigured() ? "backend" : "heuristic")
 
   const setStep = (msg: string) => {
     status.textContent = msg
@@ -69,7 +92,13 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
       objectUrl = null
     }
     btnConfirm.disabled = true
-    setModeBadge(resolveFloorplanAiProvider().isConfigured() ? "ai+rules" : "heuristic")
+    setModeBadge(
+      isDetectApiConfigured()
+        ? "backend"
+        : resolveFloorplanAiProvider().isConfigured()
+          ? "ai+rules"
+          : "heuristic",
+    )
     if (notesEl) notesEl.innerHTML = ""
     const ctx = canvas.getContext("2d")
     if (ctx) {
@@ -115,6 +144,23 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
     cb.onCancel?.()
   }
 
+  const runHeuristicPath = async (file: File) => {
+    const source = imageElementToSource(imgEl!)
+    const detected = detectFloorplan(source, sourceName)
+    const provider = resolveFloorplanAiProvider()
+    let proposal = null
+    if (provider.isConfigured()) {
+      setStep(`AI 提案中（${provider.label}）…`)
+      proposal = await provider.propose({
+        sourceName,
+        imageWidthPx: source.width,
+        imageHeightPx: source.height,
+        imageDataUrl: objectUrl ?? undefined,
+      })
+    }
+    result = assembleFromAiAndDetect(detected, proposal)
+  }
+
   const onFile = async (file: File) => {
     clearPreview()
     sourceName = file.name
@@ -123,20 +169,34 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
     try {
       objectUrl = URL.createObjectURL(file)
       imgEl = await loadImageElement(objectUrl)
-      const source = imageElementToSource(imgEl)
-      const detected = detectFloorplan(source, sourceName)
-      const provider = resolveFloorplanAiProvider()
-      let proposal = null
-      if (provider.isConfigured()) {
-        setStep(`AI 提案中（${provider.label}）…`)
-        proposal = await provider.propose({
-          sourceName,
-          imageWidthPx: source.width,
-          imageHeightPx: source.height,
-          imageDataUrl: objectUrl ?? undefined,
-        })
+
+      let usedBackend = false
+      if (isDetectApiConfigured()) {
+        setStep("呼叫本機 Detect API（mock）…")
+        try {
+          const api = await postDetectImage(file)
+          const mapped = mapDetectResponseToFloorplan(api)
+          result = {
+            floorplan: mapped.floorplan,
+            excavations: mapped.excavations,
+            binary: { width: 0, height: 0, ink: new Uint8Array() },
+            diagnostics: mapped.notes,
+            mode: "backend",
+            assembleNotes: mapped.notes,
+            proposalUsed: false,
+          }
+          usedBackend = true
+        } catch (err) {
+          console.warn("[importWizard] Detect API 失敗，回退啟發式", err)
+          setStep("後端不可用，改用啟發式…")
+        }
       }
-      result = assembleFromAiAndDetect(detected, proposal)
+
+      if (!usedBackend) {
+        await runHeuristicPath(file)
+      }
+
+      if (!result) throw new Error("辨識無結果")
       setModeBadge(result.mode)
       const notes = result.floorplan.meta.notes ?? []
       if (notesEl) {
@@ -144,9 +204,12 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
       }
       paint()
       const fp = result.floorplan
-      const modeLabel = result.mode === "ai+rules" ? "AI+規則" : "啟發式"
+      const modeLabel = modeBadgeLabel(result.mode)
+      const roomN = fp.rooms?.length ?? 0
       setStep(
-        `辨識完成（${modeLabel}）：牆 ${fp.walls.length}、門 ${fp.doors.length}、窗 ${fp.windows.length}。請確認疊圖後寫入。`,
+        `辨識完成（${modeLabel}）：牆 ${fp.walls.length}、門 ${fp.doors.length}、窗 ${fp.windows.length}` +
+          (roomN ? `、房間 ${roomN}` : "") +
+          "。請確認疊圖後寫入。",
       )
       btnConfirm.disabled = fp.walls.length === 0
       if (fp.walls.length === 0) setStep("未偵測到可用牆段，請換一張更清楚的平面圖。")

@@ -2,6 +2,15 @@
 
 export type Vec2 = { x: number; y: number }
 
+/** Optional room polygon from backend detect (metres, bottom-left). */
+export type FloorplanRoom = {
+  id: string
+  /** Room type / label, e.g. 客廳 */
+  type: string
+  vertices: Vec2[]
+  confidence?: number
+}
+
 export type Floorplan = {
   version: 1
   meta: {
@@ -19,6 +28,8 @@ export type Floorplan = {
   walls: Wall[]
   doors: Door[]
   windows: Window[]
+  /** Present when detect API / richer pipelines supply room polygons. */
+  rooms?: FloorplanRoom[]
 }
 
 export type Wall = {

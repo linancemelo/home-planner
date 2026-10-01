@@ -66,6 +66,14 @@ export const windowSchema = z.object({
   sillHeightAssumed: z.boolean().optional(),
 })
 
+
+export const roomSchema = z.object({
+  id: z.string().min(1),
+  type: z.string().min(1),
+  vertices: z.array(vec2Schema).min(3),
+  confidence: z.number().min(0).max(1).optional(),
+})
+
 export const floorplanSchema = z
   .object({
     version: z.literal(1),
@@ -84,6 +92,7 @@ export const floorplanSchema = z
     walls: z.array(wallSchema),
     doors: z.array(doorSchema),
     windows: z.array(windowSchema),
+    rooms: z.array(roomSchema).optional(),
   })
   .superRefine((plan, ctx) => {
     const ids = new Set(plan.walls.map((w) => w.id))

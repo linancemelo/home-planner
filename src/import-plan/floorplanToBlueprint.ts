@@ -260,24 +260,50 @@ export function floorplanToBlueprint(floorplan: Floorplan): PlanBlueprint {
     else notes.push("略過一道斜向窗。")
   }
 
-  const planRooms: PlanRoom[] =
-    walls.length > 0
-      ? [roomFromWalls(walls)]
-      : [
-          {
-            id: "main",
-            name: "室內",
-            poly: [
-              [0, 0],
-              [6000, 0],
-              [6000, 4000],
-              [0, 4000],
-            ],
-            mat: "wood",
-            at: [3000, 2000],
-          },
-        ]
-  notes.push("房間為牆體外框內縮的單區「室內」；細分房名／OCR 標註為後續 Phase。")
+  let planRooms: PlanRoom[] = []
+  if (floorplan.rooms && floorplan.rooms.length > 0) {
+    for (const r of floorplan.rooms) {
+      if (r.vertices.length < 3) continue
+      const poly = r.vertices.map((v) => toStudioPoint(v, maxY)) as [number, number][]
+      let cx = 0
+      let cy = 0
+      for (const [x, y] of poly) {
+        cx += x
+        cy += y
+      }
+      cx = roundMm(cx / poly.length)
+      cy = roundMm(cy / poly.length)
+      planRooms.push({
+        id: r.id,
+        name: r.type || "室內",
+        poly,
+        mat: "wood",
+        at: [cx, cy],
+      })
+    }
+  }
+  if (planRooms.length === 0) {
+    planRooms =
+      walls.length > 0
+        ? [roomFromWalls(walls)]
+        : [
+            {
+              id: "main",
+              name: "室內",
+              poly: [
+                [0, 0],
+                [6000, 0],
+                [6000, 4000],
+                [0, 4000],
+              ],
+              mat: "wood",
+              at: [3000, 2000],
+            },
+          ]
+    notes.push("房間為牆體外框內縮的單區「室內」；細分房名／OCR 標註為後續 Phase。")
+  } else {
+    notes.push(`房間 ${planRooms.length} 區取自偵測結果（含類型標籤）。`)
+  }
 
   const allRects: Array<[number, number, number, number]> = [
     ...walls.map(([x0, y0, x1, y1]) => [x0, y0, x1, y1] as [number, number, number, number]),

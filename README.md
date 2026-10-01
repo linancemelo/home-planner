@@ -38,7 +38,15 @@
 
 偵測煙測：`npm run test:detect`（使用 `src/import-plan/fixtures`）。
 
+### 本機 Detect 後端（FastAPI mock）
+
+- 目錄：`backend/`（契約見 `backend/openapi.yaml`、`backend/README.md`）。
+- `POST /api/v1/detect`：multipart 上傳影像 → **完整**結構化 JSON（牆／門／窗／房間多邊形；公尺、左下原點）。**目前為決定性 mock，尚未 YOLO。**
+- 前端：`VITE_DETECT_API_URL`（預設 `http://127.0.0.1:8000`；設 `off` 關閉）。匯入精靈優先呼叫後端，失敗回退啟發式／AI。
+- 啟動：`cd backend && source .venv/bin/activate && uvicorn main:app --reload --port 8000`
+
 ### AI 輔助辨識（架構先行）
+
 
 - 路徑：`image → 啟發式 detect →（可選）AiFloorplanProposal → assembleFromAiAndDetect（規則／連通性）→ 疊圖確認`。
 - **AI 只出提案**（房間／OCR／門窗候選），**不**輸出最終 `Floorplan` JSON；組裝與拓樸規則在 `src/import-plan/ai/`。
