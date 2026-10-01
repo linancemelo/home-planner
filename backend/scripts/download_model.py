@@ -27,6 +27,12 @@ HF_FLOORPLAN_REPO = "mudasir13cs/floorcad-yolov8n-seg"
 HF_FLOORPLAN_FILE = "floorcad-yolov8n-seg.pt"
 FLOORPLAN_DEST_NAME = "floorplan-seg.pt"
 
+# CubiCasa5K ResNet34-UNet (floor/wall/door/window semantic). MIT weights.
+HF_CUBICASA_REPO = "Yytsi/floorplan-to-3d-walls"
+HF_CUBICASA_FILE = "best.safetensors"
+HF_CUBICASA_CFG = "config.yaml"
+CUBICASA_DIR_NAME = "cubicasa"
+
 
 def _copy_ultralytics(name: str, dest: Path) -> bool:
     from ultralytics import YOLO
@@ -105,6 +111,47 @@ def _download_floorplan(dest: Path) -> bool:
     return True
 
 
+def _download_cubicasa(dest_dir: Path) -> bool:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ckpt = dest_dir / HF_CUBICASA_FILE
+    cfg = dest_dir / HF_CUBICASA_CFG
+    if ckpt.is_file() and ckpt.stat().st_size > 1_000_000:
+        print(f"Already present: {ckpt}")
+        if not cfg.is_file():
+            try:
+                from huggingface_hub import hf_hub_download
+                import shutil
+
+                c = hf_hub_download(HF_CUBICASA_REPO, HF_CUBICASA_CFG)
+                shutil.copy2(c, cfg)
+            except Exception as e:  # noqa: BLE001
+                print(f"CubiCasa config 下載失敗（可略）：{e}", file=sys.stderr)
+        return True
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("未安裝 huggingface_hub；無法下載 CubiCasa。", file=sys.stderr)
+        return False
+    print(f"Downloading {HF_CUBICASA_REPO}/{HF_CUBICASA_FILE} …")
+    try:
+        import shutil
+
+        src = hf_hub_download(HF_CUBICASA_REPO, HF_CUBICASA_FILE)
+        shutil.copy2(src, ckpt)
+        csrc = hf_hub_download(HF_CUBICASA_REPO, HF_CUBICASA_CFG)
+        shutil.copy2(csrc, cfg)
+    except Exception as e:  # noqa: BLE001
+        print(f"CubiCasa 下載失敗：{e}", file=sys.stderr)
+        return False
+    print(f"Copied → {ckpt}")
+    print(
+        "Note: CubiCasa UNet（floor/wall/door/window）；房間由 floor 連通區域推得。"
+        "CAD 風格較準；行銷圖請搭配 OpenCV 房間邊牆。"
+    )
+    return True
+
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download YOLO-seg weights for home-planner")
     parser.add_argument(
@@ -116,6 +163,17 @@ def main() -> int:
         "--no-floorplan",
         action="store_true",
         help="Skip FloorCAD floorplan-seg.pt download",
+    )
+    parser.add_argument(
+        "--cubicasa",
+        action="store_true",
+        default=True,
+        help="Download CubiCasa UNet (floor/wall/door/window) into models/cubicasa/ (default on)",
+    )
+    parser.add_argument(
+        "--no-cubicasa",
+        action="store_true",
+        help="Skip CubiCasa UNet download",
     )
     args = parser.parse_args()
     MODELS.mkdir(parents=True, exist_ok=True)
@@ -140,11 +198,18 @@ def main() -> int:
     else:
         ok = _copy_ultralytics(args.name, MODELS / args.name)
 
+    if not args.no_cubicasa and args.cubicasa:
+        cubi_ok = _download_cubicasa(MODELS / CUBICASA_DIR_NAME)
+        ok = cubi_ok or ok
+        if not cubi_ok:
+            print("CubiCasa 略過／失敗（YOLO 仍可用）。", file=sys.stderr)
+
     print("Done. Enable with:")
     print("  export DETECT_MODE=yolo")
     print("  # optional: export DETECT_SCALE_M=10")
     print("  uvicorn main:app --reload --host 127.0.0.1 --port 8000")
     print("Or from repo root: ./scripts/dev-local.sh")
+    print("Regression: python scripts/regress_detect.py")
     return 0 if ok else 1
 
 

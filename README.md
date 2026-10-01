@@ -63,7 +63,14 @@ npm install && npm run dev
 - 前端：`VITE_DETECT_API_URL` **預設關閉**（unset／空／`off`），避免 GitHub Pages 對 localhost 空等。健康檢查約 0.4s；偵測 POST 逾時約 30s。
 - UI 徽章：「後端 YOLO」／「後端 mock」／「啟發式」／「AI+規則」。
 
-**誠實限制**：公開權重偏 CAD 符號（牆／門／窗），**不是**完整房間分割；行銷風格 `*-b.jpg` 以 OpenCV 房間＋牆合併＋缺口／連通性補門為主，標註需人工疊圖確認。自有資料微調與 AWS 部署見 [TODO.md](TODO.md)。
+**誠實限制**：FloorCAD 權重偏 CAD 符號（牆／門／窗，無 room）；CubiCasa UNet 含 floor／wall／door／window（CAD 風格較準）。行銷 `*-b.jpg` 以 **OpenCV 房間邊牆去噪**＋缺口／外牆窗／連通性為主，YOLO／CubiCasa 補開口；**疊圖確認不是合格標準**，請看迴歸計數。
+
+```bash
+cd backend && source .venv/bin/activate
+python scripts/regress_detect.py   # 三張 *-b.jpg 基線表
+```
+
+自有資料微調與 AWS 部署見 [TODO.md](TODO.md)。
 
 ### AI 輔助辨識（架構先行）
 

@@ -204,16 +204,29 @@ def _estimate_mpp(bgr: np.ndarray, width_px: int) -> tuple[float, list[str], boo
     return mpp, notes, False
 
 
+def _seg_length_m(w: dict[str, Any]) -> float:
+    return (
+        (w["a"]["x"] - w["b"]["x"]) ** 2 + (w["a"]["y"] - w["b"]["y"]) ** 2
+    ) ** 0.5
+
+
+def _filter_short_walls(
+    walls: list[dict[str, Any]], *, min_len_m: float = 0.65
+) -> list[dict[str, Any]]:
+    return [w for w in walls if _seg_length_m(w) >= min_len_m]
+
+
 def _merge_collinear_walls(
     walls: list[dict[str, Any]],
     *,
-    axis_tol_m: float = 0.12,
-    gap_tol_m: float = 0.35,
+    axis_tol_m: float = 0.15,
+    gap_tol_m: float = 0.45,
+    min_len_m: float = 0.65,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Merge nearly-collinear H/V wall segments that overlap or nearly touch."""
     notes: list[str] = []
     if len(walls) < 2:
-        return walls, notes
+        return _filter_short_walls(walls, min_len_m=min_len_m), notes
 
     hv: list[tuple[str, float, float, float, dict[str, Any]]] = []
     diagonal: list[dict[str, Any]] = []
@@ -277,8 +290,9 @@ def _merge_collinear_walls(
         )
 
     out = merged + diagonal
+    out = _filter_short_walls(out, min_len_m=min_len_m)
     if len(out) < len(walls):
-        notes.append(f"牆段共線合併：{len(walls)} → {len(out)}。")
+        notes.append(f"牆段共線合併／去短：{len(walls)} → {len(out)}。")
     return out, notes
 
 
@@ -287,7 +301,12 @@ def _opencv_rooms_and_walls(
     *,
     mpp: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """Classical floor-plan geometry: large ink regions → rooms; edges → walls."""
+    """Classical floor-plan geometry with furniture denoise.
+
+    Prefer room free-space → polygon edges as structural walls (far fewer
+    false segments than raw Canny+Hough on marketing textures). For CAD-like
+    sparse ink, also skeletonize thick dark walls.
+    """
     notes: list[str] = []
     h, w = bgr.shape[:2]
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -298,16 +317,29 @@ def _opencv_rooms_and_walls(
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     closed = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    free = cv2.bitwise_not(closed)
+    # Drop tiny / compact blobs (furniture outlines, text) — keep elongated ink
+    n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+    ink = np.zeros_like(closed)
+    min_ink = max(25, int(min(w, h) * 0.002))
+    for i in range(1, n_lab):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        ww = int(stats[i, cv2.CC_STAT_WIDTH])
+        hh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+        if area >= min_ink and (aspect >= 2.2 or area >= 140):
+            ink[labels == i] = 255
+    notes.append("OpenCV 去噪：剔除短促／緊湊墨跡（家具／文字傾向）。")
+
+    free = cv2.bitwise_not(ink)
     free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel, iterations=2)
-    margin = max(4, min(w, h) // 80)
+    margin = max(6, min(w, h) // 60)
     free[:margin, :] = 0
     free[-margin:, :] = 0
     free[:, :margin] = 0
     free[:, -margin:] = 0
 
     n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(free, connectivity=8)
-    min_area = (w * h) * 0.015
+    min_area = (w * h) * 0.018
     rooms: list[dict[str, Any]] = []
     room_polys_px: list[np.ndarray] = []
     for i in range(1, n_labels):
@@ -315,7 +347,7 @@ def _opencv_rooms_and_walls(
         if area < min_area:
             continue
         mask = (labels == i).astype(np.uint8) * 255
-        poly = _approx_polygon(mask, epsilon_frac=0.012)
+        poly = _approx_polygon(mask, epsilon_frac=0.014)
         if poly is None or len(poly) < 3:
             continue
         room_polys_px.append(poly)
@@ -335,60 +367,75 @@ def _opencv_rooms_and_walls(
         f"OpenCV 連通區域房間候選 {len(rooms)} 個（面積門檻≈{min_area:.0f} px）。"
     )
 
+    # Primary walls: room polygon edges (structural, low false-positive)
     walls: list[dict[str, Any]] = []
-    edges = cv2.Canny(blur, 50, 150)
-    edges = cv2.bitwise_or(edges, closed)
-    min_len = max(28, int(min(w, h) * 0.06))
-    lines = cv2.HoughLinesP(
-        edges, 1, np.pi / 180, threshold=55, minLineLength=min_len, maxLineGap=15
-    )
-    if lines is not None:
-        for i, line in enumerate(lines.reshape(-1, 4)):
-            x1, y1, x2, y2 = (float(line[0]), float(line[1]), float(line[2]), float(line[3]))
-            if abs(x2 - x1) < 8:
-                x2 = x1
-            if abs(y2 - y1) < 8:
-                y2 = y1
-            a = _px_to_m(x1, y1, height_px=h, mpp=mpp)
-            b = _px_to_m(x2, y2, height_px=h, mpp=mpp)
+    for ri, poly in enumerate(room_polys_px):
+        pts = poly.tolist()
+        for j in range(len(pts)):
+            x1, y1 = pts[j]
+            x2, y2 = pts[(j + 1) % len(pts)]
+            a = _px_to_m(float(x1), float(y1), height_px=h, mpp=mpp)
+            b = _px_to_m(float(x2), float(y2), height_px=h, mpp=mpp)
             length = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-            if length < 0.35:
+            if length < 0.55:
                 continue
+            # Snap near-axis
+            ax, ay = a
+            bx, by = b
+            if abs(ax - bx) < 0.12:
+                bx = ax = (ax + bx) / 2
+            if abs(ay - by) < 0.12:
+                by = ay = (ay + by) / 2
             walls.append(
                 {
-                    "id": f"w-cv-{i}",
-                    "a": _vec(*a),
-                    "b": _vec(*b),
+                    "id": f"w-room{ri}-e{j}",
+                    "a": _vec(ax, ay),
+                    "b": _vec(bx, by),
                     "thicknessM": WALL_THICKNESS_M,
                     "thicknessAssumed": True,
                     "heightM": CEILING_HEIGHT_M,
                 }
             )
+    notes.append(f"房間多邊形邊推導牆段 {len(walls)}。")
 
-    walls, merge_notes = _merge_collinear_walls(walls)
-    notes.extend(merge_notes)
-
-    if len(walls) > 60:
-        walls = sorted(
-            walls,
-            key=lambda ww: (
-                (ww["a"]["x"] - ww["b"]["x"]) ** 2 + (ww["a"]["y"] - ww["b"]["y"]) ** 2
-            ),
-            reverse=True,
-        )[:60]
-        notes.append("牆段過多，已截斷至 60 條較長區段。")
-
-    if not walls and room_polys_px:
-        for ri, poly in enumerate(room_polys_px):
-            pts = poly.tolist()
-            for j in range(len(pts)):
-                x1, y1 = pts[j]
-                x2, y2 = pts[(j + 1) % len(pts)]
+    # CAD-like sparse dark ink → thick-wall skeleton Hough (supplement)
+    _, dark = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    dark_pct = float(dark.mean()) / 255.0
+    if dark_pct < 0.16:
+        k5 = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        thick = cv2.morphologyEx(dark, cv2.MORPH_OPEN, k5, iterations=1)
+        thick = cv2.morphologyEx(thick, cv2.MORPH_CLOSE, kernel, iterations=2)
+        skel = np.zeros_like(thick)
+        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        img = thick.copy()
+        for _ in range(64):
+            opened = cv2.morphologyEx(img, cv2.MORPH_OPEN, element)
+            temp = cv2.subtract(img, opened)
+            eroded = cv2.erode(img, element)
+            skel = cv2.bitwise_or(skel, temp)
+            img = eroded
+            if cv2.countNonZero(img) == 0:
+                break
+        min_len = max(36, int(min(w, h) * 0.06))
+        lines = cv2.HoughLinesP(
+            skel, 1, np.pi / 180, threshold=35, minLineLength=min_len, maxLineGap=18
+        )
+        n_add = 0
+        if lines is not None:
+            for i, line in enumerate(lines.reshape(-1, 4)):
+                x1, y1, x2, y2 = map(float, line)
+                if abs(x2 - x1) < 6:
+                    x2 = x1
+                if abs(y2 - y1) < 6:
+                    y2 = y1
                 a = _px_to_m(x1, y1, height_px=h, mpp=mpp)
                 b = _px_to_m(x2, y2, height_px=h, mpp=mpp)
+                length = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+                if length < 0.7:
+                    continue
                 walls.append(
                     {
-                        "id": f"w-room{ri}-e{j}",
+                        "id": f"w-skel-{i}",
                         "a": _vec(*a),
                         "b": _vec(*b),
                         "thicknessM": WALL_THICKNESS_M,
@@ -396,12 +443,30 @@ def _opencv_rooms_and_walls(
                         "heightM": CEILING_HEIGHT_M,
                     }
                 )
-        notes.append("Hough 無足夠線段，改由房間多邊形邊推導牆段。")
+                n_add += 1
+        notes.append(
+            f"CAD 稀疏墨跡（dark≈{dark_pct*100:.1f}%）：骨架牆補 {n_add}。"
+        )
+    else:
+        notes.append(
+            f"行銷／高墨跡圖（dark≈{dark_pct*100:.1f}%）：略過骨架 Hough，避免家具偽牆。"
+        )
+
+    walls, merge_notes = _merge_collinear_walls(walls, min_len_m=0.7)
+    notes.extend(merge_notes)
+
+    max_walls = 32
+    if len(walls) > max_walls:
+        walls = sorted(walls, key=_seg_length_m, reverse=True)[:max_walls]
+        notes.append(f"牆段過多，已截斷至 {max_walls} 條較長區段。")
 
     if not walls:
-        notes.append("OpenCV 未能抽出牆段；請換更清楚的線稿平面圖或使用 floorplan 微調權重。")
+        notes.append(
+            "OpenCV 未能抽出牆段；請換更清楚的線稿平面圖或使用 floorplan／CubiCasa 權重。"
+        )
 
     return rooms, walls, notes
+
 
 
 def _nearest_wall_id(
@@ -431,8 +496,11 @@ def _nearest_wall_id(
 
 def _openings_from_gaps(
     walls: list[dict[str, Any]],
+    *,
+    door_range: tuple[float, float] = (0.55, 1.25),
+    window_range: tuple[float, float] = (0.9, 2.6),
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """Heuristic: collinear wall pairs with a short gap → door; wider gaps → window."""
+    """Collinear wall gaps → door (typical leaf) or window (wider)."""
     notes: list[str] = []
     doors: list[dict[str, Any]] = []
     windows: list[dict[str, Any]] = []
@@ -440,16 +508,17 @@ def _openings_from_gaps(
     for w in walls:
         ax, ay = w["a"]["x"], w["a"]["y"]
         bx, by = w["b"]["x"], w["b"]["y"]
-        if abs(ay - by) < 0.1 and abs(ax - bx) > 0.3:
+        if abs(ay - by) < 0.12 and abs(ax - bx) > 0.4:
             t0, t1 = sorted([ax, bx])
             hv.append(("h", w["id"], (ay + by) / 2, t0, t1))
-        elif abs(ax - bx) < 0.1 and abs(ay - by) > 0.3:
+        elif abs(ax - bx) < 0.12 and abs(ay - by) > 0.4:
             t0, t1 = sorted([ay, by])
             hv.append(("v", w["id"], (ax + bx) / 2, t0, t1))
 
     groups: dict[tuple[str, int], list[tuple[str, float, float]]] = defaultdict(list)
     for orient, wid, const, t0, t1 in hv:
-        key = (orient, int(round(const * 20)))
+        # 0.1 m bins — more stable than 0.05 m for marketing scale noise
+        key = (orient, int(round(const * 10)))
         groups[key].append((wid, t0, t1))
 
     for (orient, _), segs in groups.items():
@@ -470,7 +539,9 @@ def _openings_from_gaps(
                     break
             if const is None:
                 continue
-            if 0.5 <= gap <= 1.4:
+            d0, d1 = door_range
+            w0, w1 = window_range
+            if d0 <= gap <= d1:
                 leaf = round(gap, 4)
                 doors.append(
                     {
@@ -478,7 +549,7 @@ def _openings_from_gaps(
                         "kind": "swing",
                         "wallId": wid_a,
                         "opening": _seg(oa, ob),
-                        "confidence": 0.45,
+                        "confidence": 0.48,
                         "swing": {
                             "hinge": _vec(*oa),
                             "leafLengthM": leaf,
@@ -487,13 +558,13 @@ def _openings_from_gaps(
                         },
                     }
                 )
-            elif 1.4 < gap <= 2.8:
+            elif w0 < gap <= w1:
                 windows.append(
                     {
                         "id": f"win-gap-{len(windows)+1}",
                         "wallId": wid_a,
                         "opening": _seg(oa, ob),
-                        "confidence": 0.4,
+                        "confidence": 0.42,
                         "sillHeightM": SILL_HEIGHT_M,
                         "sillHeightAssumed": True,
                     }
@@ -501,11 +572,87 @@ def _openings_from_gaps(
 
     if doors or windows:
         notes.append(
-            f"由共線牆段缺口推估門 {len(doors)}、窗 {len(windows)}（啟發式，請人工確認）。"
+            f"由共線牆段缺口推估門 {len(doors)}、窗 {len(windows)}"
+            f"（門 {door_range[0]}–{door_range[1]} m／窗 {window_range[0]}–{window_range[1]} m）。"
         )
     else:
-        notes.append("未從牆段缺口推估到門／窗；將嘗試連通性補開口。")
+        notes.append("未從牆段缺口推估到門／窗；將嘗試外牆窗與連通性補開口。")
     return doors, windows, notes
+
+
+def _perimeter_windows(
+    walls: list[dict[str, Any]],
+    rooms: list[dict[str, Any]],
+    *,
+    existing: list[dict[str, Any]],
+    max_add: int = 4,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Place windows on long exterior walls when openings are scarce."""
+    notes: list[str] = []
+    aabbs = [b for r in rooms if (b := _room_aabb(r))]
+    if not aabbs or max_add <= 0:
+        return [], notes
+    min_x = min(a[0] for a in aabbs)
+    min_y = min(a[1] for a in aabbs)
+    max_x = max(a[2] for a in aabbs)
+    max_y = max(a[3] for a in aabbs)
+    margin = 0.55
+
+    def opening_near(mx: float, my: float, tol: float = 0.7) -> bool:
+        for win in existing:
+            oa = win["opening"]["a"]
+            ob = win["opening"]["b"]
+            cx = (oa["x"] + ob["x"]) / 2
+            cy = (oa["y"] + ob["y"]) / 2
+            if (cx - mx) ** 2 + (cy - my) ** 2 < tol * tol:
+                return True
+        return False
+
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for w in walls:
+        ax, ay = w["a"]["x"], w["a"]["y"]
+        bx, by = w["b"]["x"], w["b"]["y"]
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        L = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+        if L < 1.7:
+            continue
+        near_ext = (
+            abs(mx - min_x) < margin
+            or abs(mx - max_x) < margin
+            or abs(my - min_y) < margin
+            or abs(my - max_y) < margin
+        )
+        if not near_ext or opening_near(mx, my):
+            continue
+        open_len = min(1.35, L * 0.32)
+        dx, dy = bx - ax, by - ay
+        hx, hy = dx / L, dy / L
+        oa = (mx - hx * open_len / 2, my - hy * open_len / 2)
+        ob = (mx + hx * open_len / 2, my + hy * open_len / 2)
+        candidates.append(
+            (
+                L,
+                {
+                    "id": "win-peri-tmp",
+                    "wallId": w["id"],
+                    "opening": _seg(oa, ob),
+                    "confidence": 0.36,
+                    "sillHeightM": SILL_HEIGHT_M,
+                    "sillHeightAssumed": True,
+                },
+            )
+        )
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    added: list[dict[str, Any]] = []
+    for _, win in candidates[:max_add]:
+        win["id"] = f"win-peri-{len(added)+1}"
+        added.append(win)
+    if added:
+        notes.append(
+            f"外牆啟發式補窗 {len(added)}（長邊外牆中點，請疊圖確認）。"
+        )
+    return added, notes
+
 
 
 def _room_aabb(room: dict[str, Any]) -> tuple[float, float, float, float] | None:
@@ -707,9 +854,10 @@ def run_yolo_detect(
     yolo_windows: list[dict[str, Any]] = []
     confs: list[float] = []
 
-    conf_thr = 0.15 if has_floorplan_classes else 0.25
+    # Higher conf on FloorCAD furniture-heavy taxonomy to cut false walls/openings
+    conf_thr = 0.22 if has_floorplan_classes else 0.28
     try:
-        results = model.predict(bgr, verbose=False, conf=conf_thr, iou=0.5)
+        results = model.predict(bgr, verbose=False, conf=conf_thr, iou=0.45)
     except Exception as e:  # noqa: BLE001
         notes.append(f"YOLO 推論失敗，改純 OpenCV：{e}")
         results = []
@@ -832,26 +980,156 @@ def run_yolo_detect(
     cv_rooms, cv_walls, cv_notes = _opencv_rooms_and_walls(bgr, mpp=mpp)
     notes.extend(cv_notes)
 
-    rooms = yolo_rooms if yolo_rooms else cv_rooms
-    walls = yolo_walls if yolo_walls else cv_walls
-    if yolo_walls and cv_walls and len(yolo_walls) < 6:
-        walls = yolo_walls + cv_walls
-        notes.append("YOLO 牆段稀疏，已併用 OpenCV Hough 牆段。")
-        walls, merge_notes = _merge_collinear_walls(walls)
-        notes.extend(merge_notes)
+    # CubiCasa semantic seg (floor/wall/door/window) when weights present
+    cubi = None
+    try:
+        from cubicasa_seg import cubicasa_available, extract_from_cubicasa
+
+        if cubicasa_available():
+            cubi = extract_from_cubicasa(bgr, mpp=mpp)
+            notes.extend(cubi.get("notes") or [])
+        else:
+            notes.append(
+                "未找到 CubiCasa 權重（models/cubicasa/best.safetensors）；"
+                "可 python scripts/download_model.py --cubicasa。"
+            )
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"CubiCasa 略過：{e}")
+
+    # Structure: prefer OpenCV room-edge walls (stable counts); YOLO/CubiCasa walls sparse-only
+    rooms = cv_rooms
+    if cubi and cubi.get("rooms") and len(cubi["rooms"]) > len(rooms):
+        rooms = cubi["rooms"]
+        notes.append("房間採用 CubiCasa floor 連通區域（多於 OpenCV）。")
+    elif yolo_rooms and len(yolo_rooms) >= max(3, len(cv_rooms)):
+        rooms = yolo_rooms
+        notes.append("房間採用 YOLO 遮罩。")
+
+    walls = list(cv_walls)
+    if yolo_walls:
+        # Only keep YOLO walls that are reasonably long; merge into CV structure
+        long_yolo = [w for w in yolo_walls if _seg_length_m(w) >= 0.8]
+        if long_yolo:
+            walls = walls + long_yolo
+            notes.append(f"併入 YOLO 長牆 {len(long_yolo)}。")
+    if cubi and cubi.get("wall_segs"):
+        cubi_walls = cubi["wall_segs"]
+        if len(cubi_walls) <= 40:
+            for i, (a, b) in enumerate(cubi_walls):
+                walls.append(
+                    {
+                        "id": f"w-cubi-{i+1}",
+                        "a": _vec(*a),
+                        "b": _vec(*b),
+                        "thicknessM": WALL_THICKNESS_M,
+                        "thicknessAssumed": True,
+                        "heightM": CEILING_HEIGHT_M,
+                    }
+                )
+            notes.append(f"併入 CubiCasa 牆段 {len(cubi_walls)}。")
+        else:
+            notes.append(
+                f"CubiCasa 牆段過碎（{len(cubi_walls)}），已捨棄以免膨脹偽牆。"
+            )
+
+    walls, merge_notes = _merge_collinear_walls(walls, min_len_m=0.7)
+    notes.extend(merge_notes)
+    if len(walls) > 32:
+        walls = sorted(walls, key=_seg_length_m, reverse=True)[:32]
+        notes.append("牆段過多，最終截斷至 32。")
+
+    def _opening_len(op: dict[str, Any]) -> float:
+        a, b = op["opening"]["a"], op["opening"]["b"]
+        return ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
+
+    def _dedupe_openings(
+        items: list[dict[str, Any]], *, min_sep: float = 0.55
+    ) -> list[dict[str, Any]]:
+        kept: list[dict[str, Any]] = []
+        for it in items:
+            a, b = it["opening"]["a"], it["opening"]["b"]
+            mx, my = (a["x"] + b["x"]) / 2, (a["y"] + b["y"]) / 2
+            if any(
+                ((k["opening"]["a"]["x"] + k["opening"]["b"]["x"]) / 2 - mx) ** 2
+                + ((k["opening"]["a"]["y"] + k["opening"]["b"]["y"]) / 2 - my) ** 2
+                < min_sep * min_sep
+                for k in kept
+            ):
+                continue
+            kept.append(it)
+        return kept
 
     doors = list(yolo_doors)
     windows = list(yolo_windows)
-    # Always try gap heuristics to supplement (YOLO often misses marketing-plan doors)
+    # Geometric length filter on YOLO openings
+    doors = [d for d in doors if 0.45 <= _opening_len(d) <= 1.6]
+    windows = [w for w in windows if 0.55 <= _opening_len(w) <= 3.5]
+
+    if cubi:
+        cubi_doors = list(cubi.get("door_segs") or [])
+        cubi_doors.sort(
+            key=lambda ab: ((ab[0][0] - ab[1][0]) ** 2 + (ab[0][1] - ab[1][1]) ** 2),
+            reverse=True,
+        )
+        for i, (a, b) in enumerate(cubi_doors[:6]):
+            leaf = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+            doors.append(
+                {
+                    "id": f"d-cubi-{i+1}",
+                    "kind": "swing",
+                    "wallId": "w-unknown",
+                    "opening": _seg(a, b),
+                    "confidence": 0.5,
+                    "swing": {
+                        "hinge": _vec(*a),
+                        "leafLengthM": round(leaf, 4),
+                        "openDirection": "cw",
+                        "arcQuarter": True,
+                    },
+                }
+            )
+        cubi_wins = list(cubi.get("window_segs") or [])
+        cubi_wins.sort(
+            key=lambda ab: ((ab[0][0] - ab[1][0]) ** 2 + (ab[0][1] - ab[1][1]) ** 2),
+            reverse=True,
+        )
+        for i, (a, b) in enumerate(cubi_wins[:5]):
+            windows.append(
+                {
+                    "id": f"win-cubi-{i+1}",
+                    "wallId": "w-unknown",
+                    "opening": _seg(a, b),
+                    "confidence": 0.48,
+                    "sillHeightM": SILL_HEIGHT_M,
+                    "sillHeightAssumed": True,
+                }
+            )
+
     gap_doors, gap_wins, gap_notes = _openings_from_gaps(walls)
     notes.extend(gap_notes)
-    if not doors:
+    if len(doors) < 2:
         doors.extend(gap_doors)
-    elif gap_doors and len(doors) < 2:
-        doors.extend(gap_doors[:2])
-        notes.append("已併用缺口啟發式補出門候選。")
-    if not windows:
+        if gap_doors:
+            notes.append("已併用缺口啟發式補門。")
+    if len(windows) < 2:
         windows.extend(gap_wins)
+        if gap_wins:
+            notes.append("已併用缺口啟發式補窗。")
+
+    peri, peri_notes = _perimeter_windows(
+        walls, rooms, existing=windows, max_add=max(0, 4 - len(windows))
+    )
+    notes.extend(peri_notes)
+    windows.extend(peri)
+
+    doors = _dedupe_openings(doors)
+    windows = _dedupe_openings(windows)
+    if len(doors) > 10:
+        doors = sorted(doors, key=_opening_len, reverse=True)[:10]
+        notes.append("門候選過多，截斷至 10。")
+    if len(windows) > 8:
+        windows = sorted(windows, key=_opening_len, reverse=True)[:8]
+        notes.append("窗候選過多，截斷至 8。")
 
     for d in doors:
         oa = (d["opening"]["a"]["x"], d["opening"]["a"]["y"])
@@ -864,18 +1142,23 @@ def run_yolo_detect(
 
     walls, doors, access_notes = _ensure_room_access(rooms, walls, doors)
     notes.extend(access_notes)
+    doors = _dedupe_openings(doors)
     notes.append(
         "連通性：請確認門／窗是否落在牆段上；匯入後可於 2D 微調。"
-        "無專用微調權重時結果僅供參考。"
+        "CubiCasa＝CAD 風格語意分割；FloorCAD YOLO＝符號；OpenCV＝房間邊牆。"
+        "行銷圖仍可能需人工疊圖修正。"
     )
 
     if confs:
         overall = round(float(sum(confs) / len(confs)), 3)
     else:
-        overall = 0.5 if walls else 0.2
+        overall = 0.52 if walls else 0.2
 
     model_label = _MODEL_PATH or "yolo-seg"
+    if cubi is not None:
+        model_label = f"{model_label} + cubicasa-unet"
     notes.insert(1, f"模型：{model_label}")
+
 
     return {
         "version": 1,

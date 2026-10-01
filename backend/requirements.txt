@@ -8,3 +8,7 @@ ultralytics>=8.3.0,<8.5
 numpy>=1.26.0,<3
 # Optional: FloorCAD floorplan-seg.pt via scripts/download_model.py
 huggingface_hub>=0.26.0,<1
+# CubiCasa UNet (optional DETECT companion)
+segmentation-models-pytorch>=0.3.3,<0.5
+safetensors>=0.4,<1
+Pillow>=10.0.0,<12

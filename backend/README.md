@@ -15,7 +15,7 @@
 
 Swagger：啟動後 `/docs` 掛載本目錄 `openapi.yaml`（含 mock 回應範例）。
 
-> **誠實限制**：`scripts/download_model.py` 可下載公開 FloorCAD 符號 seg（寫入 `floorplan-seg.pt`；wall/door/window 等，**無** room 類）。房間與多數行銷平面圖結構仍靠 OpenCV（連通區域房間 + 共線牆合併 + 缺口／ensureRoomAccess 補門）。要準確請用自有資料微調並覆寫 `floorplan-seg.pt`。
+> **誠實限制**：FloorCAD `floorplan-seg.pt`＝CAD 符號（wall/door/window，**無** room）。CubiCasa `models/cubicasa/best.safetensors`＝floor/wall/door/window。行銷圖以 OpenCV 房間邊牆去噪＋嚴格門窗幾何為主；CubiCasa 過碎牆會捨棄。疊圖確認≠合格 — 請跑 `python scripts/regress_detect.py`。自有資料微調見根目錄 TODO。
 
 ## 契約
 
