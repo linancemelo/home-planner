@@ -7,6 +7,8 @@ import { defineConfig } from "vite"
 // 然後把 viteSingleFile() 加進 plugins。偵測管線沒有後端，適合日後收成單一 HTML。
 
 export default defineConfig({
+  // GitHub 專案 Pages：https://<user>.github.io/home-planner/
+  base: "/home-planner/",
   plugins: [
     react(),
     tailwindcss(),
