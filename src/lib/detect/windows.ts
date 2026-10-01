@@ -9,6 +9,7 @@ export type WindowEval =
   | { status: "insufficient" }
   | { status: "extends-outside" }
   | { status: "closed-rect" }
+  | { status: "cavity" }
   | { status: "window"; confidence: number }
 
 export function evaluateWindow(
@@ -61,6 +62,9 @@ export function evaluateWindow(
 
   const span = Math.min(pair[0].t1, pair[1].t1) - Math.max(pair[0].t0, pair[1].t0)
   const confidence = Math.round(Math.min(0.88, 0.5 + (span / openingPx) * 0.3) * 100) / 100
+  if (openingM >= 1.8 && Math.abs(pair[0].offset - pair[1].offset) >= 2) {
+    return { status: "cavity" }
+  }
   return { status: "window", confidence }
 }
 
@@ -75,6 +79,7 @@ export function findWindowsOnWalls(
   height: number,
   fragments: WallFragment[],
   mpp: number,
+  notes: string[] = [],
 ): PlacedWindow[] {
   const minLen = Math.max(22, 0.42 / mpp)
   const maxLen = Math.min(280, 2.9 / mpp)
@@ -125,6 +130,11 @@ export function findWindowsOnWalls(
         const exterior = facesExterior(gray, width, height, frag, span0, span1)
         const short = span <= Math.max(52, 0.95 / mpp) && span < len * 0.4
         if (!inWall && !(exterior && lines >= 3 && short)) continue
+        const meters = span * mpp
+        if (meters >= 1.8 && lines >= 2 && (cavityLike(gray, cleaned, width, height, frag, span0, span1, sep) || lines >= 3)) {
+          notes.push("待查：可能空心牆腔")
+          continue
+        }
         found.push({
           openingA: gap.a,
           openingB: gap.b,
@@ -180,6 +190,55 @@ function facesExterior(
   const plus = sample(1)
   const minus = sample(-1)
   return Math.abs(plus - minus) > 45 && Math.max(plus, minus) > 175
+}
+
+/** 很長、外線距接近牆厚、內部是空的，比較像雙線牆的空腔而不是窗。 */
+function cavityLike(
+  gray: Uint8Array,
+  cleaned: Uint8Array,
+  width: number,
+  height: number,
+  frag: WallFragment,
+  span0: number,
+  span1: number,
+  outerSep: number,
+): boolean {
+  const thick = Math.max(frag.thicknessPx, 6)
+  if (outerSep < thick * 0.45 || outerSep > thick * 1.2) return false
+  const dx = frag.b.x - frag.a.x
+  const dy = frag.b.y - frag.a.y
+  const len = Math.hypot(dx, dy) || 1
+  const dirX = dx / len
+  const dirY = dy / len
+  const nx = -dirY
+  const ny = dirX
+  let hollow = 0
+  for (let s = 1; s <= 5; s++) {
+    const t = span0 + ((span1 - span0) * s) / 6
+    const cx = frag.a.x + dirX * t
+    const cy = frag.a.y + dirY * t
+    let interiorInk = 0
+    let interiorN = 0
+    let faceInk = 0
+    let faceN = 0
+    const half = Math.max(outerSep / 2, thick / 2)
+    for (let off = -half; off <= half; off += 1) {
+      const x = Math.round(cx + nx * off)
+      const y = Math.round(cy + ny * off)
+      if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1) continue
+      const g = gray[y * width + x]
+      const on = cleaned[y * width + x] === 1
+      if (Math.abs(off) >= half - 1.6) {
+        faceN++
+        if (on || g < 80) faceInk++
+      } else {
+        interiorN++
+        if (on || g < 60) interiorInk++
+      }
+    }
+    if (faceN > 0 && interiorN > 0 && faceInk / faceN >= 0.35 && interiorInk / interiorN <= 0.45) hollow++
+  }
+  return hollow >= 3
 }
 
 /** 細線要在實心牆的淺色凹槽裡，或在雙線牆的空腔裡。貼在牆外的家具平行線不算窗。 */

@@ -70,6 +70,11 @@ function evaluateSwing(
     const aligned = arc !== null && leaf !== null && circDistDeg(leaf.deg, arc.leafDeg) <= 32
 
     if (arcOk && leafOk && aligned && arc && leaf) {
+      const verdict = curveVerdict(ink, width, height, hinge, openingPx, wallDeg, arc.leafDeg)
+      if (arc.kind === "solid" ? verdict !== "curve" : verdict === "grain") {
+        partial = true
+        continue
+      }
       const leafRad = (leaf.deg * Math.PI) / 180
       const confidence = Math.round(Math.min(0.9, 0.45 + arc.rate * 0.3 + leaf.density * 0.2) * 100) / 100
       const hit: SwingHit = {
@@ -207,7 +212,7 @@ function tangentStroke(
 function bestArcWindow(
   samples: ArcSample[],
   wallDeg: number,
-): { rate: number; raw: number; leafDeg: number; start: number; size: number } | null {
+): { rate: number; raw: number; leafDeg: number; start: number; size: number; kind: "solid" | "dotted" } | null {
   const bins = samples.length
   const dilated = samples.map((_, i) => {
     for (let k = -2; k <= 2; k++) {
@@ -216,7 +221,7 @@ function bestArcWindow(
     }
     return false
   })
-  let best: { rate: number; raw: number; leafDeg: number; start: number; size: number } | null = null
+  let best: { rate: number; raw: number; leafDeg: number; start: number; size: number; kind: "solid" | "dotted" } | null = null
   const minSize = Math.round(68 / 3)
   const maxSize = Math.round(112 / 3)
   for (let size = minSize; size <= maxSize; size++) {
@@ -264,10 +269,79 @@ function bestArcWindow(
       const d1 = circDistDeg(endDeg, wallDeg)
       if (d0 > edgeTol && d1 > edgeTol) continue
       const leafDeg = d0 <= d1 ? endDeg : startDeg
-      if (!best || rate > best.rate) best = { rate, raw, leafDeg, start: s, size }
+      const kind = solid ? "solid" : "dotted"
+      if (!best || rate > best.rate) best = { rate, raw, leafDeg, start: s, size, kind }
     }
   }
   return best
+}
+
+/** 木紋是一組平行直線，圓弧的筆畫方向會跟著切線轉。 */
+function curveVerdict(
+  ink: Uint8Array,
+  w: number,
+  h: number,
+  hinge: Vec2,
+  radius: number,
+  wallDeg: number,
+  leafDeg: number,
+): "curve" | "grain" | "unknown" {
+  let sweep = leafDeg - wallDeg
+  while (sweep > 180) sweep -= 360
+  while (sweep < -180) sweep += 360
+  if (Math.abs(sweep) < 50 || Math.abs(sweep) > 130) return "unknown"
+  const errors: number[] = []
+  const step = Math.sign(sweep) * 9
+  for (let d = step; Math.abs(d) < Math.abs(sweep) - 6; d += step) {
+    const deg = wallDeg + d
+    const ang = (deg * Math.PI) / 180
+    const x = hinge.x + Math.cos(ang) * radius
+    const y = hinge.y + Math.sin(ang) * radius
+    const axis = strokeAxis(ink, w, h, x, y)
+    if (axis === null) continue
+    const tangent = ((deg + 90) % 180 + 180) % 180
+    errors.push(undirectedDist(axis, tangent))
+  }
+  if (errors.length < 4) return "unknown"
+  errors.sort((a, b) => a - b)
+  return errors[Math.floor(errors.length / 2)] <= 22 ? "curve" : "grain"
+}
+
+function strokeAxis(
+  ink: Uint8Array,
+  w: number,
+  h: number,
+  x: number,
+  y: number,
+): number | null {
+  const cx = Math.round(x)
+  const cy = Math.round(y)
+  let sxx = 0
+  let syy = 0
+  let sxy = 0
+  let n = 0
+  for (let dy = -4; dy <= 4; dy++) {
+    for (let dx = -4; dx <= 4; dx++) {
+      const xx = cx + dx
+      const yy = cy + dy
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue
+      if (!ink[yy * w + xx]) continue
+      sxx += dx * dx
+      syy += dy * dy
+      sxy += dx * dy
+      n++
+    }
+  }
+  if (n < 5) return null
+  let deg = (0.5 * Math.atan2(2 * sxy, sxx - syy) * 180) / Math.PI
+  if (deg < 0) deg += 180
+  return deg
+}
+
+function undirectedDist(a: number, b: number): number {
+  let d = Math.abs(a - b) % 180
+  if (d > 90) d = 180 - d
+  return d
 }
 
 function oppositeRaw(samples: ArcSample[], start: number, size: number): number {
@@ -445,7 +519,7 @@ function capSeparated(found: PlacedSwing[]): PlacedSwing[] {
         y: (other.openingA.y + other.openingB.y) / 2,
       }
       const otherLen = dist(other.openingA, other.openingB)
-      return dist(mid, mid2) < Math.max(len, otherLen) * 0.9
+      return dist(mid, mid2) < Math.max(len, otherLen) * 1.05
     })
     if (!close) kept.push(hit)
   }

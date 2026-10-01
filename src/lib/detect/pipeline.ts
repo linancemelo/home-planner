@@ -156,7 +156,8 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
       pxNotes.push("疑似平開門但特徵不足")
       continue
     }
-    if (win.status === "insufficient") pxNotes.push("疑似窗戶但平行線不足，已略過。")
+    if (win.status === "cavity") pxNotes.push("待查：可能空心牆腔")
+    else if (win.status === "insufficient") pxNotes.push("疑似窗戶但平行線不足，已略過。")
     else if (win.status === "extends-outside") pxNotes.push("疑似窗戶但線段超出牆外，已略過。")
     else if (win.status === "closed-rect") pxNotes.push("疑似窗戶但形狀像封閉小矩形，已略過。")
   }
@@ -250,6 +251,7 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
     pre.height,
     searchLines,
     walls.metersPerPixel,
+    pxNotes,
   )) {
     if (clashes(win.openingA, win.openingB)) continue
     pxWindows.push(win)
