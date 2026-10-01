@@ -7,6 +7,9 @@ export const LANG_STORAGE_KEY = "home-planner-lang" as const
 /** localStorage key for pane visibility preferences. */
 export const PANES_STORAGE_KEY = "home-planner-panes-v1" as const
 
+/** Re-export blueprint persistence key (geometry lives beside scheme). */
+export { BLUEPRINT_STORAGE_KEY } from "../types/blueprint.ts"
+
 /** Compatible export/import JSON shape (mm units). */
 export type SchemeFurniture = {
   id: string

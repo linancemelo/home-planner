@@ -9,11 +9,11 @@ import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockCont
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import {
-  structuralWalls, windowOpenings, swingDoors, slidingDoors, planRooms,
-} from '../../plan/data/defaultApartment';
+import { createDefaultBlueprint } from '../../plan/data/defaultApartment';
 import { floorMaterials } from '../../plan/data/floorMaterials';
 import { furnitureCatalog } from '../../plan/catalog/furnitureCatalog';
+import { BLUEPRINT_STORAGE_KEY } from '../../plan/types/blueprint.ts';
+import { bindImportWizard } from '../../import-plan/importWizard.ts';
 
 let booted = false;
 
@@ -127,7 +127,20 @@ function defaultFurniture(){ return [
 
 function defaultState(){
   const rooms = {}; planRooms.forEach(r => rooms[r.id] = {name:r.name, mat:r.mat});
-  return {furniture:defaultFurniture(), rooms, demolished:[], measures:[]};
+  const furniture = blueprint.source === 'default' ? defaultFurniture() : [];
+  return {furniture, rooms, demolished:[], measures:[]};
+}
+function applyBlueprint(bp){
+  blueprint = bp;
+  structuralWalls = blueprint.walls;
+  windowOpenings = blueprint.windowOpenings;
+  swingDoors = blueprint.swingDoors;
+  slidingDoors = blueprint.slidingDoors;
+  planRooms = blueprint.planRooms;
+  BOUNDS = blueprint.bounds;
+  OX = blueprint.origin?.ox ?? (BOUNDS.x + BOUNDS.w / 2);
+  OY = blueprint.origin?.oy ?? (BOUNDS.y + BOUNDS.h / 2);
+  saveBlueprint();
 }
 
 const SCHEME_STORE_KEY = 'home-planner-scheme-v1';
@@ -137,7 +150,13 @@ function load(){
 }
 function fixState(s){
   const d = defaultState();
-  s.rooms = Object.assign(d.rooms, s.rooms || {});
+  // Keep mats/names for known rooms; drop stale room ids from a previous blueprint
+  const merged = {};
+  planRooms.forEach(r => {
+    const prev = (s.rooms && s.rooms[r.id]) || d.rooms[r.id];
+    merged[r.id] = { name: prev?.name ?? r.name, mat: prev?.mat ?? r.mat };
+  });
+  s.rooms = merged;
   s.demolished = s.demolished || []; s.measures = s.measures || [];
   return s;
 }
@@ -146,7 +165,23 @@ const PX_MM = 25.4 / 96;                       // 1 CSS px = 0.2646 mm
 const COARSE = matchMedia('(pointer:coarse)').matches;   // iPad / 手机等触屏为主的设备
 const TAP = COARSE ? 9 : 4;                    // 手指按下后移动超过该像素才算拖动
 const narrow = () => matchMedia('(max-width:1100px)').matches;
-const BOUNDS = {x:-1850, y:-1750, w:15600, h:14100};
+function loadBlueprint(){
+  try {
+    const s = JSON.parse(localStorage.getItem(BLUEPRINT_STORAGE_KEY));
+    if (s && Array.isArray(s.walls) && Array.isArray(s.planRooms) && s.bounds && s.origin) return s;
+  } catch (e) {}
+  return null;
+}
+function saveBlueprint(){
+  try { localStorage.setItem(BLUEPRINT_STORAGE_KEY, JSON.stringify(blueprint)); } catch (e) {}
+}
+let blueprint = loadBlueprint() || createDefaultBlueprint();
+let structuralWalls = blueprint.walls;
+let windowOpenings = blueprint.windowOpenings;
+let swingDoors = blueprint.swingDoors;
+let slidingDoors = blueprint.slidingDoors;
+let planRooms = blueprint.planRooms;
+let BOUNDS = blueprint.bounds;
 const $ = s => document.querySelector(s);
 const svg = $('#plan');
 
@@ -370,9 +405,15 @@ function renderOpenings(){
     if (v){ const L = y1-y0, m = (x0+x1)/2; s += `<rect x="${m-45}" y="${y0}" width="40" height="${L*.55}" fill="#fff" ${DS}/><rect x="${m+5}" y="${y1-L*.55}" width="40" height="${L*.55}" fill="#fff" ${DS}/>`; }
     else { const L = x1-x0, m = (y0+y1)/2; s += `<rect x="${x0}" y="${m-45}" width="${L*.55}" height="40" fill="#fff" ${DS}/><rect x="${x1-L*.55}" y="${m+5}" width="${L*.55}" height="40" fill="#fff" ${DS}/>`; }
   });
-  // 入户标识
-  s += `<path d="M3350 8755H4350M4150 8600L4400 8755L4150 8910" fill="none" stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke"/>
-        <text x="3380" y="8600" font-size="200" fill="#b5653a">${tr('入户','Entry')}</text>`;
+  // 入户标识（有 entry 門時標在門左側）
+  const entryDoor = swingDoors.find(d => d.entry);
+  if (entryDoor){
+    const [x0,y0,x1,y1] = entryDoor.rect;
+    const mx = (x0+x1)/2, my = (y0+y1)/2;
+    const labelX = Math.min(x0, x1) - 1200, labelY = my;
+    s += `<path d="M${labelX} ${labelY}H${Math.min(x0,x1)-80}M${Math.min(x0,x1)-280} ${labelY-155}L${Math.min(x0,x1)-80} ${labelY}L${Math.min(x0,x1)-280} ${labelY+155}" fill="none" stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke"/>
+          <text x="${labelX}" y="${labelY-160}" font-size="200" fill="#b5653a">${tr('入户','Entry')}</text>`;
+  }
   $('#gOpen').innerHTML = s;
 }
 
@@ -399,11 +440,22 @@ function renderDims(){
     return s;
   };
   const g = $('#gDims');
-  g.innerHTML =
-    chain(true,-750,0,[1580,240,2760,240,1540,240,3670]) + chain(true,-1250,0,[10270]) +
-    chain(true,11350,0,[2180,240,2160,240,5450,240,1340]) + chain(true,11850,0,[11850]) +
-    chain(false,-800,0,[3370,1580,240,2770,240,2360]) + chain(false,-1300,0,[10560]) +
-    chain(false,12750,0,[3370,240,2760,240,3950]) + chain(false,13250,0,[10560]);
+  if (blueprint.source === 'default'){
+    g.innerHTML =
+      chain(true,-750,0,[1580,240,2760,240,1540,240,3670]) + chain(true,-1250,0,[10270]) +
+      chain(true,11350,0,[2180,240,2160,240,5450,240,1340]) + chain(true,11850,0,[11850]) +
+      chain(false,-800,0,[3370,1580,240,2770,240,2360]) + chain(false,-1300,0,[10560]) +
+      chain(false,12750,0,[3370,240,2760,240,3950]) + chain(false,13250,0,[10560]);
+  } else {
+    // 匯入戶型：只標外框總寬／總高
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    structuralWalls.forEach(([x0,y0,x1,y1]) => { minX=Math.min(minX,x0,x1); minY=Math.min(minY,y0,y1); maxX=Math.max(maxX,x0,x1); maxY=Math.max(maxY,y0,y1); });
+    if (!Number.isFinite(minX)){ g.innerHTML = ''; }
+    else {
+      const W = Math.round(maxX-minX), Hdim = Math.round(maxY-minY);
+      g.innerHTML = chain(true, minY-600, minX, [W]) + chain(false, minX-600, minY, [Hdim]);
+    }
+  }
   g.setAttribute('display', ui.layers.dims ? 'inline' : 'none');
 }
 
@@ -462,7 +514,10 @@ function renderAll(){
 
 function updateHeader(){
   const tot = planRooms.filter(r => r.counted !== false).reduce((a,r) => a + area(r.poly), 0);
-  $('#subtitle').textContent = tr(`套内使用面积约 ${fmtArea(tot)} · 尺寸单位 mm · 原图比例 1:60`, `Net floor area ≈ ${fmtArea(tot)} · Units: mm · Original scale 1:60`);
+  const scaleNote = blueprint.source === 'default'
+    ? tr('原图比例 1:60', 'Original scale 1:60')
+    : tr('由平面圖辨識（NTS）', 'From floor-plan detect (NTS)');
+  $('#subtitle').textContent = tr(`套内使用面积约 ${fmtArea(tot)} · 尺寸单位 mm · ${scaleNote}`, `Net floor area ≈ ${fmtArea(tot)} · Units: mm · ${scaleNote}`);
   $('#undo').disabled = !undoStack.length; $('#redo').disabled = !redoStack.length;
   $('#undo').style.opacity = undoStack.length ? 1 : .4; $('#redo').style.opacity = redoStack.length ? 1 : .4;
 }
@@ -1067,6 +1122,17 @@ $('#fileIn').onchange = e => {
   e.target.value = '';
 };
 $('#reset').onclick = () => { if (confirm(tr('恢复为默认设计方案？（可撤销）', 'Reset to the default design? (undoable)'))){ const b = snap(); state = defaultState(); ui.sel = null; commit(b); renderAll(); } };
+$('#restoreDefaultPlan') && ($('#restoreDefaultPlan').onclick = () => {
+  if (!confirm(tr('還原範例戶型？將取代目前牆體／門窗並清空家具（可撤銷方案，但幾何會立即切換）', 'Restore the sample apartment? This replaces walls/doors/windows and clears furniture.'))) return;
+  const b = snap();
+  applyBlueprint(createDefaultBlueprint());
+  state = defaultState();
+  ui.sel = null; undoStack.length = 0; redoStack.length = 0;
+  commit(b);
+  renderOpenings(); renderDims(); fitView(); renderAll();
+  window.View3D?.sync?.(true);
+  toast(tr('已還原範例戶型', 'Sample apartment restored'));
+});
 // 横竖屏切换、表头换行等都会改变画布尺寸；尺寸从 0 恢复（如首次布局）时重新适应窗口
 // 其余尺寸变化（收起 / 展开面板等）保持画面中心不动
 let lastW = 0, lastH = 0;
@@ -1092,6 +1158,26 @@ buildDefs(); buildLib(); renderOpenings(); renderDims();
 $('#tip').textContent = TIPS()['2d'];
 fitView(); renderAll();
 
+const unbindImport = bindImportWizard(document, {
+  hasCustomBlueprint: () => blueprint.source !== 'default' || (state.furniture && state.furniture.length > 0),
+  confirmReplace: () => confirm(tr('以辨識結果取代目前戶型？家具將清空。', 'Replace the current layout with the detected plan? Furniture will be cleared.')),
+  onConfirm: (bp) => {
+    const b = snap();
+    applyBlueprint(bp);
+    state = defaultState();
+    ui.sel = null; undoStack.length = 0; redoStack.length = 0;
+    commit(b);
+    renderOpenings(); renderDims(); fitView(); renderAll();
+    window.View3D?.sync?.(true);
+    // stay in 2D
+    if (document.body.classList.contains('mode-3d') || $('#stage')?.classList.contains('is3d')) {
+      /* leave 3D if somehow open — enter/exit managed by viewSeg */
+    }
+    toast(tr('已從平面圖建立戶型，可開始擺放家具', 'Floor plan applied — you can place furniture now'));
+  },
+});
+void unbindImport;
+
 
 
   /* ===== 3D engine ===== */
@@ -1103,7 +1189,7 @@ fitView(); renderAll();
  * ============================================================ */
 
 const stage = $('#stage'), host = $('#view3d');
-const OX = 6000, OY = 5300, H = 2.8, FOV = 45;       // 户型中心放在世界原点，层高 2.8 m
+let OX = blueprint.origin?.ox ?? 6000, OY = blueprint.origin?.oy ?? 5300; const H = 2.8, FOV = 45;       // 户型中心放在世界原点，层高 2.8 m
 const wx = x => (x - OX) / 1000, wz = y => (y - OY) / 1000, M = v => v / 1000;
 const SW = () => stage.clientWidth, SH = () => stage.clientHeight;
 const opt = {cut:2.8, furn:true, labels:true, night:false, hour:10, mode:'orbit'};
@@ -1895,8 +1981,8 @@ function buildArch(){
     colliders.push([wx(w[0]), wz(w[1]), wx(w[2]), wz(w[3])]);
   });
   // 门洞、飘窗洞口上方过梁
-  [...swingDoors.map(d => [d.rect, 2.1]), ...slidingDoors.map(s => [s.rect, s.v ? 2.4 : 2.1]), [[10270,800,10510,2600], 2.4], [[10270,4260,10510,5740], 2.4]]
-    .forEach(([r, h]) => { if (top > h) wallBox(r, h, top); });
+  const lintels = [...swingDoors.map(d => [d.rect, 2.1]), ...slidingDoors.map(s => [s.rect, s.v ? 2.4 : 2.1]), ...(blueprint.lintelOpenings || [])];
+  lintels.forEach(([r, h]) => { if (top > h) wallBox(r, h, top); });
   windowOpenings.forEach((r, i) => {
     const sill = i === 0 ? 1.4 : i >= 6 ? .45 : .9, head = 2.4;
     wallBox(r, 0, Math.min(sill, top)); if (top > head) wallBox(r, head, top);
@@ -2154,7 +2240,19 @@ function setMode(m){
     select(null);
     if (opt.cut < H){ opt.cut = H; syncCutBtns(); sync(); }
     orbit.enabled = false; fly = null;
-    camera.position.set(wx(4200), 1.6, wz(8755)); camera.lookAt(wx(7000), 1.5, wz(8755));   // 入户门外
+    {
+      const entry = swingDoors.find(d => d.entry) || swingDoors[0];
+      if (entry){
+        const [x0,y0,x1,y1] = entry.rect;
+        const mx = (x0+x1)/2, my = (y0+y1)/2;
+        const outside = entry.c ? [mx - entry.c[0]*1200, my - entry.c[1]*1200] : [mx - 1200, my];
+        const inside = entry.c ? [mx + entry.c[0]*1800, my + entry.c[1]*1800] : [mx + 1800, my];
+        camera.position.set(wx(outside[0]), 1.6, wz(outside[1])); camera.lookAt(wx(inside[0]), 1.5, wz(inside[1]));
+      } else {
+        camera.position.set(wx(BOUNDS.x + BOUNDS.w*0.2), 1.6, wz(BOUNDS.y + BOUNDS.h*0.8));
+        camera.lookAt(wx(OX), 1.5, wz(OY));
+      }
+    }
     $('#walkOverlay').style.display = 'flex';
     syncHint3d();
   } else {
@@ -2250,7 +2348,7 @@ function shot(){ const a = document.createElement('a'); a.download = tr('室內�
 
 function relang(){ syncWalkTexts(); if (inited) buildLabels(); }
 
-window.View3D = {enter, exit, relang, sync:() => sync(), shot, groundAt, flyToRoom:id => active && !anim && flyToRoom(id), walking:() => active && opt.mode === 'walk'};
+window.View3D = {enter, exit, relang, sync:(force) => sync(!!force), shot, groundAt, flyToRoom:id => active && !anim && flyToRoom(id), walking:() => active && opt.mode === 'walk'};
 
   return () => {
     booted = false;
