@@ -41,3 +41,4 @@ backend/fixtures/finetune_rw/images/
 backend/fixtures/finetune_rw/labels/
 backend/fixtures/finetune_rw/runs/
 backend/models/floorplan-rw-seg-ft.pt
+runs/

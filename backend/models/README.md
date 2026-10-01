@@ -39,3 +39,12 @@ python scripts/regress_detect.py
 ```
 
 誠實限制：公開權重偏 CAD；行銷 `*-b.jpg` 仍需疊圖確認。自有資料微調可覆寫 `floorplan-seg.pt`。
+
+## Fine-tune（免費 GPU）
+
+見 [`../training/README.md`](../training/README.md)。訓練後：
+
+```bash
+python scripts/install_finetuned_weight.py /path/to/best.pt
+export DETECT_MODE=yolo
+```

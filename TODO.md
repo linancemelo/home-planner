@@ -27,7 +27,7 @@ Phase 1／2 之後、尚未實作或已自 UI 撤下的項目。
 - [x] `opencv-python-headless`、`ultralytics`、可選 FloorCAD `floorplan-seg.pt`（`scripts/download_model.py`）
 - [x] 本機一鍵：`scripts/dev-local.sh` + 前端 `.env.local` 說明
 - [x] CubiCasa UNet（floor/wall/door/window）＋ OpenCV 房間邊牆去噪／嚴格門窗幾何／`scripts/regress_detect.py`
-- [ ] **Fine-tune**：自有行銷／CAD 平面圖微調 YOLO-seg（含 room），覆寫 `backend/models/floorplan-seg.pt`（本機 CPU 暫以 CubiCasa＋規則補齊）
+- [ ] **Fine-tune（免費 GPU）**：Colab／Kaggle 微調 YOLO-seg（room/wall/door/window）→ 見 `backend/training/README.md` 與 `finetune_floorplan_seg.ipynb`；裝回 `python backend/scripts/install_finetuned_weight.py best.pt`（預設 `floorplan-rw-seg.pt`）。本機 CPU 暫以 CubiCasa＋規則補齊；品質閘見 `backend/fixtures/QA-BLOCKER-gpu.md`
 - [ ] 房間自動分割與 OCR 房名標註（後端產出更準的 `rooms[].type`）
 - [ ] 匯入後互動微調牆／門／窗
 - [ ] 門／窗與牆段拓樸更穩（斜牆、厚牆雙線）；外牆窗啟發式仍偏樂觀

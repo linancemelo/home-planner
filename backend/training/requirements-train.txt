@@ -1,0 +1,8 @@
+# Extra deps for Colab/Kaggle / local dataset prep (inference backend uses requirements.txt)
+ultralytics>=8.3.0,<8.5
+huggingface_hub>=0.26.0,<1
+datasets>=2.19.0,<4
+opencv-python-headless>=4.10.0,<4.11
+Pillow>=10.0.0,<12
+PyYAML>=6.0,<7
+numpy>=1.26.0,<3
