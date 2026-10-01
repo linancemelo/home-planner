@@ -1121,7 +1121,8 @@ $('#fileIn').onchange = e => {
   });
   e.target.value = '';
 };
-$('#reset').onclick = () => { if (confirm(tr('恢复为默认设计方案？（可撤销）', 'Reset to the default design? (undoable)'))){ const b = snap(); state = defaultState(); ui.sel = null; commit(b); renderAll(); } };
+// #reset removed from shell; use 還原範例戶型 / 清空佈置. Guard if ever re-added:
+$('#reset')?.addEventListener?.('click', () => { if (confirm(tr('恢复为默认设计方案？（可撤销）', 'Reset to the default design? (undoable)'))){ const b = snap(); state = defaultState(); ui.sel = null; commit(b); renderAll(); } });
 $('#restoreDefaultPlan') && ($('#restoreDefaultPlan').onclick = () => {
   if (!confirm(tr('還原範例戶型？將取代目前牆體／門窗並清空家具（可撤銷方案，但幾何會立即切換）', 'Restore the sample apartment? This replaces walls/doors/windows and clears furniture.'))) return;
   const b = snap();
