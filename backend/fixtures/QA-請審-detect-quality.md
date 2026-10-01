@@ -1,6 +1,6 @@
 # 【請審】Detect 品質閘 — 三基線 before/after
 
-**Commit 目標**：main（本機 YOLO E2E 品質；**勿當部署放行**；**不請求「實圖偵測品質審查通過」**）
+**Commit 目標**：main（本機 YOLO/CubiCasa/CV 品質；**勿當部署放行**；**不請求「實圖偵測品質審查通過」**）
 **基線圖**（`src/import-plan/fixtures/real-samples/`）：
 
 | # | 檔名 | 風格 |
@@ -9,50 +9,45 @@
 | 2 | `964226aa-b.jpg` | 591 行銷彩圖（邊框／浮水印／底欄） |
 | 3 | `bb00b5bf-b.jpg` | 室內設計 CAD／灰階標註圖 |
 
-**疊圖**：`backend/fixtures/qa-overlays/`（`before_*.png`＝3cbf570、`after_*.png`＝本變更、`diff_*.png`＝並排）
+**疊圖**：`backend/fixtures/qa-overlays/`（`before_*.png`＝3d73553、`after_*.png`＝本變更、`diff_*.png`＝並排）
 
-## Before（3cbf570）→ After（本變更）
+## Before（3d73553）→ After（本變更）
 
 | image | walls | doors | windows | rooms | peri 窗 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 2b69218a-b.jpg | 20→**14** | 6→**4** | 4→**5** | 8→**5** | 0→**0** |
-| 964226aa-b.jpg | 13→**6** | 1→**3** | 0→**0** | 1→**5** | 0→**0** |
-| bb00b5bf-b.jpg | 20→**11** | 3→**4** | 2→**1** | 6→**5** | 1→**0** |
+| 2b69218a-b.jpg | 14→**21** | 4→**5** | 5→**6** | 5→**8** | 0→**0** |
+| 964226aa-b.jpg | 6→**16** | 3→**5** | 0→**7** | 5→**9** | 0→**0** |
+| bb00b5bf-b.jpg | 11→**22** | 4→**4** | 1→**7** | 5→**9** | 0→**0** |
 
-（591／CAD 窗僅模型偵測；本輪 **零** `win-peri-*`／缺口啟發式窗。）
+（peri 中點補窗仍禁止；591／CAD 窗主要來自外牆平行筆劃／缺口／CubiCasa，非 peri。）
 
-### 本輪強制幾何規則（已實作）
-1. **垂直標題／側欄裁切**：`_crop_vertical_title_columns` 以 quiet gutter 去掉 CAD 左尺寸欄／右 title block（bb：`x1=1833`，原 2401）。
-2. **繪圖 footprint**：奶油底／裝飾外再收斂 ROI；分析前 `_mask_outside_roi`。
-3. **禁止啟發式 peri／gap 窗**：僅 YOLO／CubiCasa 模型窗；`_perimeter_windows` 永為 no-op。
-4. **結構牆優先**：CAD 用中灰 wall-fill → skeleton＋近軸 Hough；行銷用深色墨跡＋Canny；**略過鋸齒房間邊當牆**（墨跡足夠時）。
-5. **房間**：watershed 切大門口頸＋**AABB**（避免傢具鋸齒多邊形）；重疊合併；上限 7。
-6. **穿越淨空**：非 ink 牆抽樣深入房間則剔除；ink／skel 牆保留（避免粗 AABB 誤殺真牆）。
-7. **連通性**：doorless 小房優先補門，預算≤4。
+### 本輪改動（已實作）
+1. **平面圖風格**：以**原圖** sat／近黑筆劃判定 `marketing` vs `cad`（修 ROI 白遮罩後 sat 崩潰、誤走 CAD 中灰邏輯抓傢具）。
+2. **房間拓撲**：CubiCasa floor＋牆／門屏障＋watershed；`_ortho_polygon_from_mask`；chrome 過濾後才採用 CubiCasa；房間不再落底欄／title block。
+3. **結構牆**：行銷厚墨跡優先；CAD 中灰填牆上限改 ~165（先前 <125 切掉真牆）；CubiCasa 長牆至多併 16；硬上限 22。
+4. **窗／門**：模型不足時 → 外牆**共線缺口**窗（非 peri）＋外牆**平行筆劃**窗符號；外牆 extent 只用牆段 bbox（避免 CubiCasa 房框膨脹）。
+5. **未做** CPU fine-tune（費時／收益不定）；仍以 CV＋既有 CubiCasa／FloorCAD YOLO 為主。
 
-### 對應 QA 子彈（誠實）
+### 誠實 usable %（疊圖目視，非計數）
 
-| QA 點 | 結果 |
-| --- | --- |
-| **CAD 右垂直標題欄吃進幾何** | **改善**：quiet gutter 裁到 x1≈1833；房間／牆不再落在 BH title block。疊圖請看 `diff_bb00b5bf-b.png`。 |
-| **禁止 heuristic peri 窗** | **已修**：三基線 peri＝0；bb 由 1 peri→僅 `win-cubi-1`。 |
-| **鋸齒房間邊穿越淨空／傢具** | **改善**：不再大量 promote 房間多邊形邊；牆改近軸結構墨跡；AABB 房。仍可能有少數傢具對齊短段。 |
-| **591 塌成 1 不合理房間** | **改善**：1→**5** AABB 房（watershed＋footprint）。尚未對齊每間真實臥／衛邊界。 |
-| **2b 牆切客廳／餐廳＋doorless** | **改善**：牆 20→14、穿越過濾；access 補門最多 4（本輪 2）。開放廳仍可能被粗 AABB 蓋住。 |
-| **開口貼牆** | **維持**：snap／drop 遠距開口。 |
+| image | 估 usable | 依據 |
+| --- | ---: | --- |
+| 2b69218a-b.jpg | **~45%** | 臥室有分開綠塊；開放廳仍粗／合併；牆覆蓋↑但仍有傢具對齊與穿越；CubiCasa 窗大致貼外牆 |
+| 964226aa-b.jpg | **~40%** | 591 窗計數 0→7（平行筆劃）但部分未貼真窗洞；房塊碎且與真臥／廳邊界弱對齊；牆仍切開放廳／對齊傢具 |
+| bb00b5bf-b.jpg | **~45%** | ROI 避開 title；牆覆蓋明顯好於 3d73553；開放廳／餐廳仍多 AABB 重疊；窗 7 中平行筆劃需人工確認是否 flush |
 
-### 如何重跑迴歸
+**三圖皆明顯 <85% overlay-usable。計數 alone 不可當通過。不請求部署／不寫審查通過。**
+
+### 剩餘缺口 → 下一輪槓桿
+1. **真牆覆蓋**：CAD／行銷手描級 ink skeleton（厚填＋筆劃雙路徑合併後再 Hough）；更強傢具抑制（高局部紋理／短段）。
+2. **房間多邊形**：以牆段約束 polygon（不只 watershed AABB）；臥室墨牆切開後 ortho 貼齊。
+3. **窗 flush**：平行筆劃需再驗證落在「外牆 ink 上的窗符號」；CAD CubiCasa 窗優先於启发式。
+4. **Fine-tune**：有 GPU／標註時對行銷圖 fine-tune FloorCAD YOLO（wall/door/window）；CPU 短训不建議當本閘關卡。
+5. **開放平面**：客廳／餐廳／書房不要硬切成多 AABB；允許單一 L 形 ortho。
+
+### 如何重跑
 ```bash
 cd backend && source .venv/bin/activate
-export DETECT_MODE=yolo
 python scripts/regress_detect.py
 # 疊圖：fixtures/qa-overlays/after_*-b.png / diff_*-b.png
 ```
-
-### 剩餘缺口（誠實 — 未達 ~85% overlay 可用則勿標通過）
-- **未宣稱 ~85% 疊圖可用／未請求部署／未寫「實圖偵測品質審查通過」**。
-- 591：窗仍 0（模型未見則不發明）；牆偏少且偶有穿越傢具段；房＝粗 AABB。
-- CAD：開放廳／餐廳仍可能被單一綠框覆蓋；結構牆覆蓋率仍低於人工線稿。
-- 2b：開放區房間切分仍粗；CubiCasa 窗需人工疊圖確認貼牆。
-- 未做行銷圖 YOLO fine-tune。
-- **疊圖確認 ≠ 合格**；請以計數＋`diff_*.png` 人工抽樣為準。

@@ -1,8 +1,8 @@
 """CubiCasa5K ResNet34-UNet semantic segmentation (floor/wall/door/window).
 
 Optional companion to YOLO-seg. Weights live at models/cubicasa/best.safetensors
-(from Hugging Face Yytsi/floorplan-to-3d-walls). Floor pixels → room candidates;
-wall/door/window masks → geometry after morphological cleanup.
+(from Hugging Face Yytsi/floorplan-to-3d-walls). Floor pixels → room candidates
+split by wall barriers; wall/door/window masks → geometry after cleanup.
 
 CubiCasa is trained on Nordic CAD SVG rasters; marketing photos are noisier —
 we only keep openings / wall centerlines that pass geometric priors.
@@ -187,36 +187,139 @@ def _wall_mask_to_segments(
     from yolo_pipeline import _px_to_m
 
     m = (wall_mask > 0).astype(np.uint8) * 255
-    if m.mean() < 1:
+    if m.mean() < 0.5:
         return []
-    # Suppress speckles / floor bleed
     k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k, iterations=1)
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=2)
-    # Drop if wall fraction too high (noisy marketing bleed)
-    frac = float(m.mean()) / 255.0
-    if frac > 0.12 or cv2.countNonZero(m) > (m.shape[0] * m.shape[1] * 0.12):
-        return []  # too noisy — skip CubiCasa walls
-    min_len = max(28, int(min(width_px, height_px) * 0.05))
+    # Prefer elongated CCs (structural) over furniture blobs
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
+    cleaned = np.zeros_like(m)
+    for i in range(1, n):
+        area = int(st[i, cv2.CC_STAT_AREA])
+        ww = int(st[i, cv2.CC_STAT_WIDTH])
+        hh = int(st[i, cv2.CC_STAT_HEIGHT])
+        aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+        if area < 35:
+            continue
+        # Drop compact furniture-like blobs unless large area
+        if aspect < 1.6 and area < 900:
+            continue
+        cleaned[lab == i] = 255
+    m = cleaned
+    if cv2.countNonZero(m) < 80:
+        return []
+    # Skeleton → Hough (more stable than raw mask Hough on thick fills)
+    skel = np.zeros_like(m)
+    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    img = m.copy()
+    for _ in range(64):
+        opened = cv2.morphologyEx(img, cv2.MORPH_OPEN, element)
+        temp = cv2.subtract(img, opened)
+        eroded = cv2.erode(img, element)
+        skel = cv2.bitwise_or(skel, temp)
+        img = eroded
+        if cv2.countNonZero(img) == 0:
+            break
+    hough_src = cv2.bitwise_or(skel, cv2.erode(m, k, iterations=1))
+    min_len = max(22, int(min(width_px, height_px) * 0.04))
     lines = cv2.HoughLinesP(
-        m, 1, np.pi / 180, threshold=40, minLineLength=min_len, maxLineGap=16
+        hough_src, 1, np.pi / 180, threshold=28, minLineLength=min_len, maxLineGap=14
     )
     segs: list[tuple[tuple[float, float], tuple[float, float]]] = []
     if lines is None:
         return segs
-    if len(lines) > 80:
-        return []  # fragmented — defer to OpenCV room edges
     for x1, y1, x2, y2 in lines.reshape(-1, 4):
         if abs(int(x2) - int(x1)) < 6:
             x2 = x1
         if abs(int(y2) - int(y1)) < 6:
             y2 = y1
+        # Reject strong diagonals
+        if abs(int(x2) - int(x1)) >= 8 and abs(int(y2) - int(y1)) >= 8:
+            continue
         a = _px_to_m(float(x1), float(y1), height_px=height_px, mpp=mpp)
         b = _px_to_m(float(x2), float(y2), height_px=height_px, mpp=mpp)
         length = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-        if length >= 0.6:
+        if length >= 0.55:
             segs.append((a, b))
+    # Cap fragmentation
+    if len(segs) > 60:
+        segs = sorted(
+            segs,
+            key=lambda ab: ((ab[0][0] - ab[1][0]) ** 2 + (ab[0][1] - ab[1][1]) ** 2),
+            reverse=True,
+        )[:40]
     return segs
+
+
+def _floor_rooms_via_wall_barriers(
+    floor: np.ndarray,
+    wall: np.ndarray,
+    door: np.ndarray,
+    *,
+    height_px: int,
+    mpp: float,
+    max_rooms: int = 10,
+) -> list[dict[str, Any]]:
+    """Split CubiCasa floor with wall(+door) barriers → room polygons (ortho/AABB)."""
+    from yolo_pipeline import _ortho_polygon_from_mask, _px_to_m, _vec
+
+    h, w = floor.shape[:2]
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    free = cv2.morphologyEx(floor, cv2.MORPH_OPEN, k, iterations=1)
+    barrier = cv2.bitwise_or(wall, door)
+    # Dilate barriers enough to close door necks for CC split
+    barrier = cv2.dilate(barrier, k3, iterations=3)
+    free = cv2.bitwise_and(free, cv2.bitwise_not(barrier))
+    free = cv2.morphologyEx(free, cv2.MORPH_OPEN, k3, iterations=2)
+    margin = max(4, min(w, h) // 80)
+    free[:margin, :] = 0
+    free[-margin:, :] = 0
+    free[:, :margin] = 0
+    free[:, -margin:] = 0
+
+    # Watershed mega-blobs at distance peaks
+    from yolo_pipeline import _split_free_via_watershed
+
+    min_area = (w * h) * 0.012
+    masks = _split_free_via_watershed(free, min_area=min_area, max_rooms=max_rooms)
+    rooms: list[dict[str, Any]] = []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for mask in masks:
+        area = int(mask.sum() // 255)
+        if area < min_area:
+            continue
+        poly = _ortho_polygon_from_mask(mask, max_verts=10)
+        if poly is None or len(poly) < 3:
+            continue
+        # Reject thin chrome strips
+        xs, ys = poly[:, 0], poly[:, 1]
+        bw, bh = float(xs.max() - xs.min()), float(ys.max() - ys.min())
+        if bh > 1 and bw / bh >= 5.0 and bh < h * 0.12:
+            continue
+        if bw > 1 and bh / bw >= 5.0 and bw < w * 0.12:
+            continue
+        verts = [
+            _vec(*_px_to_m(float(x), float(y), height_px=height_px, mpp=mpp))
+            for x, y in poly
+        ]
+        scored.append(
+            (
+                float(area),
+                {
+                    "id": f"room-cubi-{len(scored)+1}",
+                    "type": "房間",
+                    "vertices": verts,
+                    "confidence": 0.55,
+                },
+            )
+        )
+    scored.sort(key=lambda t: t[0], reverse=True)
+    for _, r in scored[:max_rooms]:
+        r["id"] = f"room-cubi-{len(rooms)+1}"
+        rooms.append(r)
+    return rooms
 
 
 def extract_from_cubicasa(
@@ -232,54 +335,33 @@ def extract_from_cubicasa(
     door = (mask == 2).astype(np.uint8) * 255
     window = (mask == 3).astype(np.uint8) * 255
 
-    # Rooms from floor connected components (ignore border padding bleed)
-    k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    free = cv2.morphologyEx(floor, cv2.MORPH_OPEN, k, iterations=1)
-    margin = max(4, min(w, h) // 80)
-    free[:margin, :] = 0
-    free[-margin:, :] = 0
-    free[:, :margin] = 0
-    free[:, -margin:] = 0
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(free, 8)
-    min_area = (w * h) * 0.02
-    rooms: list[dict[str, Any]] = []
-    from yolo_pipeline import _approx_polygon, _px_to_m, _vec
+    # Drop floor predictions on white/chrome (ROI mask leaves white outside drawing)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    not_chrome = (gray < 245).astype(np.uint8) * 255
+    floor = cv2.bitwise_and(floor, not_chrome)
+    wall = cv2.bitwise_and(wall, not_chrome)
+    door = cv2.bitwise_and(door, not_chrome)
+    window = cv2.bitwise_and(window, not_chrome)
 
-    for i in range(1, n):
-        area = int(stats[i, cv2.CC_STAT_AREA])
-        if area < min_area:
-            continue
-        poly = _approx_polygon((labels == i).astype(np.uint8) * 255, epsilon_frac=0.015)
-        if poly is None or len(poly) < 3:
-            continue
-        verts = [
-            _vec(*_px_to_m(float(x), float(y), height_px=h, mpp=mpp)) for x, y in poly
-        ]
-        rooms.append(
-            {
-                "id": f"room-cubi-{len(rooms)+1}",
-                "type": "房間",
-                "vertices": verts,
-                "confidence": 0.5,
-            }
-        )
-    notes.append(f"CubiCasa floor→房間候選 {len(rooms)} 個。")
+    rooms = _floor_rooms_via_wall_barriers(
+        floor, wall, door, height_px=h, mpp=mpp, max_rooms=10
+    )
+    notes.append(f"CubiCasa floor＋牆屏障→房間候選 {len(rooms)} 個。")
 
     wall_segs = _wall_mask_to_segments(wall, height_px=h, width_px=w, mpp=mpp)
-    notes.append(f"CubiCasa 牆中心線候選 {len(wall_segs)}（過噪則捨棄）。")
+    notes.append(f"CubiCasa 牆中心線候選 {len(wall_segs)}。")
 
-    door_segs = _mask_to_opening_segments(door, height_px=h, mpp=mpp, min_area=35)
-    win_segs = _mask_to_opening_segments(window, height_px=h, mpp=mpp, min_area=40)
-    # Geometric priors: doors ~0.6–1.3 m, windows ~0.7–3.0 m
+    door_segs = _mask_to_opening_segments(door, height_px=h, mpp=mpp, min_area=28)
+    win_segs = _mask_to_opening_segments(window, height_px=h, mpp=mpp, min_area=28)
     doors_f = []
     for a, b, _area in door_segs:
         L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-        if 0.6 <= L <= 1.3:
+        if 0.5 <= L <= 1.45:
             doors_f.append((a, b))
     wins_f = []
     for a, b, _area in win_segs:
         L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-        if 0.7 <= L <= 3.0:
+        if 0.55 <= L <= 3.5:
             wins_f.append((a, b))
     notes.append(
         f"CubiCasa 開口（幾何過濾後）：門 {len(doors_f)}、窗 {len(wins_f)}。"
@@ -290,5 +372,7 @@ def extract_from_cubicasa(
         "wall_segs": wall_segs,
         "door_segs": doors_f,
         "window_segs": wins_f,
+        "wall_mask": wall,
+        "floor_mask": floor,
         "notes": notes,
     }

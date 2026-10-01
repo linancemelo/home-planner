@@ -148,56 +148,55 @@ def _approx_polygon(mask: np.ndarray, epsilon_frac: float = 0.02) -> np.ndarray 
 
 
 def _ortho_polygon_from_mask(mask: np.ndarray, *, max_verts: int = 12) -> np.ndarray | None:
-    """Axis-aligned-ish room outline: prefer AABB / coarse ortho over jagged free-space contour.
+    """Axis-aligned-ish room outline from free-space mask.
 
-    Marketing furniture textures make free-space contours zigzag through sofas/beds;
-    a coarse rectilinear outline is far more usable on overlay (~85% goal).
+    Prefer morphologically closed rectilinear outlines when the blob is L/T-shaped
+    (fill low); fall back to AABB for compact rectangular rooms. Avoid jagged
+    furniture contours that fail overlay QA.
     """
     m = (mask > 0).astype(np.uint8) * 255
     if m.max() == 0:
         return None
-    ys, xs = np.where(m > 0)
+    # Light close to fill furniture holes inside a room without bridging walls
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    m_closed = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=1)
+    ys, xs = np.where(m_closed > 0)
     if xs.size < 30:
         return None
-    # Primary: axis-aligned bbox — honest coarse room for marketing
     x0, x1 = int(xs.min()), int(xs.max())
     y0, y1 = int(ys.min()), int(ys.max())
     bw, bh = x1 - x0 + 1, y1 - y0 + 1
     area = int(xs.size)
     fill = area / max(bw * bh, 1)
-    # If fairly rectangular free-space, use AABB
-    if fill >= 0.55 or area < 8000:
-        return np.array(
-            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64
-        )
-    # Otherwise: approxPolyDP then snap vertices toward ortho
-    poly = _approx_polygon(m, epsilon_frac=0.035)
+    aabb = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
+    # Compact / rectangular → AABB
+    if fill >= 0.62 or area < 6000:
+        return aabb
+    # L/T shaped: try ortho-snapped approx on closed mask
+    poly = _approx_polygon(m_closed, epsilon_frac=0.028)
     if poly is None or len(poly) < 4:
-        return np.array(
-            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64
-        )
-    # Snap each edge to axis if close
+        return aabb
     pts = poly.astype(np.float64).tolist()
-    snapped = [pts[0]]
+    snapped = [pts[0][:]]
     for i in range(1, len(pts)):
         px, py = snapped[-1]
         qx, qy = pts[i]
-        if abs(qx - px) < abs(qy - py) * 0.35:
+        if abs(qx - px) < abs(qy - py) * 0.40:
             qx = px
-        elif abs(qy - py) < abs(qx - px) * 0.35:
+        elif abs(qy - py) < abs(qx - px) * 0.40:
             qy = py
         snapped.append([qx, qy])
-    # close
-    if abs(snapped[-1][0] - snapped[0][0]) < 3:
+    if abs(snapped[-1][0] - snapped[0][0]) < 4:
         snapped[-1][0] = snapped[0][0]
-    if abs(snapped[-1][1] - snapped[0][1]) < 3:
+    if abs(snapped[-1][1] - snapped[0][1]) < 4:
         snapped[-1][1] = snapped[0][1]
     arr = np.array(snapped, dtype=np.float64)
-    if len(arr) > max_verts:
-        # fall back to AABB when still too complex
-        return np.array(
-            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64
-        )
+    if len(arr) < 4 or len(arr) > max_verts:
+        return aabb
+    # Reject if ortho poly area far from mask (junk contour)
+    poly_area = abs(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2)))
+    if poly_area < area * 0.55:
+        return aabb
     return arr
 
 
@@ -828,6 +827,38 @@ def _footprint_mask(
     return foot
 
 
+def _plan_style_from_bgr(
+    bgr: np.ndarray,
+    foot: np.ndarray | None = None,
+    *,
+    orig_sat_frac: float | None = None,
+) -> str:
+    """Classify plan as 'marketing' (dark stroke ink) vs 'cad' (mid-gray fills).
+
+    IMPORTANT: measure color on *original* sat when available — ROI white-mask
+    kills marketing sat and previously forced CAD mid-gray logic onto furniture.
+    """
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    if foot is None:
+        foot = np.ones(gray.shape, np.uint8) * 255
+    inside = foot > 0
+    if not inside.any():
+        return "cad"
+    sat_frac = float(orig_sat_frac) if orig_sat_frac is not None else float((sat[inside] > 80).mean())
+    near_black = float(((blur < 55) & inside).mean())
+    mid_gray = float(((blur > 40) & (blur < 135) & (sat < 55) & inside).mean())
+    # Colorful marketing renders
+    if sat_frac > 0.08:
+        return "marketing"
+    # Desaturated marketing line-art: thin near-black strokes dominate mid fills
+    if near_black >= 0.008 and near_black >= mid_gray * 0.25:
+        return "marketing"
+    return "cad"
+
+
 def _split_free_via_watershed(
     free: np.ndarray,
     *,
@@ -849,7 +880,7 @@ def _split_free_via_watershed(
         # Huge blob → watershed; modest → keep
         # Only watershed true mega-blobs (open-plan living); keep modest CCs
         free_total = max(1, int(free.sum() // 255))
-        if area >= max(min_area * 8.0, free_total * 0.35):
+        if area >= max(min_area * 5.0, free_total * 0.22):
             big_masks.append(m)
         else:
             simple.append(m)
@@ -864,7 +895,8 @@ def _split_free_via_watershed(
         h, w = big.shape
         ks = max(15, int(min(h, w) * 0.045) | 1)
         dil = cv2.dilate(dist, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ks, ks)))
-        peaks = ((dist >= dil - 0.5) & (dist >= max(dmax * 0.38, 18.0))).astype(np.uint8)
+        # Lower peak floor so bedrooms separated by thin ink still get seeds
+        peaks = ((dist >= dil - 0.5) & (dist >= max(dmax * 0.28, 12.0))).astype(np.uint8)
         peaks = cv2.bitwise_and(peaks * 255, big)
         n_seed, seed_lab = cv2.connectedComponents(peaks)
         seeds: list[tuple[float, int, int, int]] = []
@@ -878,12 +910,13 @@ def _split_free_via_watershed(
         markers = np.zeros(big.shape, np.int32)
         placed: list[tuple[int, int]] = []
         sid = 1
+        min_seed_sep = (ks * 0.50) ** 2
         for dval, i, cx, cy in seeds:
             if sid > max_rooms:
                 break
-            if dval < max(dmax * 0.30, 14.0):
+            if dval < max(dmax * 0.22, 10.0):
                 continue
-            if any((cx - px) ** 2 + (cy - py) ** 2 < (ks * 0.65) ** 2 for px, py in placed):
+            if any((cx - px) ** 2 + (cy - py) ** 2 < min_seed_sep for px, py in placed):
                 continue
             markers[seed_lab == i] = sid
             placed.append((cx, cy))
@@ -917,39 +950,50 @@ def _structural_walls_from_ink(
     x1: int,
     y1: int,
     foot: np.ndarray,
-    max_add: int = 18,
+    max_add: int = 28,
+    plan_style: str = "cad",
 ) -> tuple[list[dict[str, Any]], np.ndarray]:
     """Long near-axis walls from dark ink / CAD wall fills.
 
     Returns (walls, ink_mask) so callers can require ink support later.
+    Prefer thick structural ink; suppress compact furniture/decor blobs harder.
     """
     h, w = bgr.shape[:2]
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3, 3), 0)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     sat = hsv[:, :, 1]
-    marketing = float((sat > 80).mean()) > 0.10
+    marketing = plan_style == "marketing"
     k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
     if marketing:
-        # Near-black structural strokes on colorful marketing renders
-        dark = (blur < 78).astype(np.uint8) * 255
+        # Near-black structural strokes on marketing / line-art plans
+        dark = (blur < 72).astype(np.uint8) * 255
     else:
         # CAD wall fills: mid-gray solid bands, low saturation
-        dark = ((blur > 35) & (blur < 140) & (sat < 70)).astype(np.uint8) * 255
+        dark = ((blur > 25) & (blur < 165) & (sat < 60)).astype(np.uint8) * 255
     dark = cv2.bitwise_and(dark, foot)
     dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, k3, iterations=1)
     dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k3, iterations=2)
 
+    # Prefer thick ink on marketing (furniture lines thin). CAD fills already solid.
+    if marketing:
+        dist = cv2.distanceTransform(dark, cv2.DIST_L2, 5)
+        thick = ((dist >= 1.0) & (dark > 0)).astype(np.uint8) * 255
+        if cv2.countNonZero(thick) >= 80:
+            dark = thick
+
     n, lab, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
     ink = np.zeros_like(dark)
-    min_area = 40 if marketing else 90
+    min_area = 35 if marketing else 70
     for i in range(1, n):
         area = int(st[i, cv2.CC_STAT_AREA])
         ww = int(st[i, cv2.CC_STAT_WIDTH])
         hh = int(st[i, cv2.CC_STAT_HEIGHT])
         aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
-        if area >= min_area and (aspect >= 1.4 or area >= (280 if marketing else 400)):
+        # Harder furniture suppress: compact blobs need much larger area
+        compact_ok = area >= (900 if marketing else 700)
+        if area >= min_area and (aspect >= 1.8 or compact_ok):
             ink[lab == i] = 255
 
     # Skeleton → Hough for centerlines of thick CAD fills / dark strokes
@@ -972,10 +1016,10 @@ def _structural_walls_from_ink(
         hough_src = cv2.bitwise_or(cv2.dilate(ink, k3, iterations=1), dark_e)
     else:
         hough_src = skel
-    min_len = max(22 if marketing else 28, int(min(x1 - x0, y1 - y0) * (0.035 if marketing else 0.045)))
+    min_len = max(18 if marketing else 24, int(min(x1 - x0, y1 - y0) * (0.028 if marketing else 0.038)))
     lines = cv2.HoughLinesP(
-        hough_src, 1, np.pi / 180, threshold=22 if not marketing else 28,
-        minLineLength=min_len, maxLineGap=14,
+        hough_src, 1, np.pi / 180, threshold=20 if not marketing else 24,
+        minLineLength=min_len, maxLineGap=18,
     )
     walls: list[dict[str, Any]] = []
     if lines is None:
@@ -992,7 +1036,7 @@ def _structural_walls_from_ink(
             continue
         a = _px_to_m(x1p, y1p, height_px=h, mpp=mpp)
         b = _px_to_m(x2p, y2p, height_px=h, mpp=mpp)
-        min_L = 1.0 if marketing else 0.7
+        min_L = 0.75 if marketing else 0.55
         if not _is_structural_edge(a[0], a[1], b[0], b[1], min_len=min_L):
             continue
         L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
@@ -1021,7 +1065,7 @@ def _structural_walls_from_ink(
         if any(
             ((k["a"]["x"] + k["b"]["x"]) / 2 - mx) ** 2
             + ((k["a"]["y"] + k["b"]["y"]) / 2 - my) ** 2
-            < 0.30 ** 2
+            < 0.22 ** 2
             for k in kept
         ):
             continue
@@ -1128,6 +1172,8 @@ def _opencv_rooms_and_walls(
     mpp: float,
     content_roi: tuple[int, int, int, int] | None = None,
     skip_skeleton: bool = False,
+    plan_style: str | None = None,
+    orig_sat_frac: float | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     """Classical floor-plan geometry with furniture denoise + watershed rooms.
 
@@ -1151,6 +1197,9 @@ def _opencv_rooms_and_walls(
     )
 
     foot = _footprint_mask(bgr, x0, y0, x1, y1)
+    if plan_style is None:
+        plan_style = _plan_style_from_bgr(bgr, foot, orig_sat_frac=orig_sat_frac)
+    notes.append(f"平面圖風格判定：{plan_style}（影響墨跡／骨架路徑）。")
     foot_frac = float(foot[y0:y1, x0:x1].mean()) / 255.0
     # Tighten ROI to footprint bbox (marketing cream / CAD pads)
     ys, xs = np.where(foot > 0)
@@ -1188,14 +1237,22 @@ def _opencv_rooms_and_walls(
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     closed = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # Prefer thick structural ink as barriers (CAD wall fills / marketing black)
+    # Prefer thick structural ink as barriers (plan_style from ORIGINAL sat / strokes)
     hsv_b = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    _sat0 = float((hsv_b[:, :, 1] > 80).mean())
-    if _sat0 > 0.10:
-        dark = (blur < 78).astype(np.uint8) * 255
+    marketing = plan_style == "marketing"
+    if marketing:
+        dark = (blur < 72).astype(np.uint8) * 255
     else:
-        dark = ((blur > 35) & (blur < 140) & (hsv_b[:, :, 1] < 70)).astype(np.uint8) * 255
+        dark = ((blur > 25) & (blur < 165) & (hsv_b[:, :, 1] < 60)).astype(np.uint8) * 255
     dark = cv2.bitwise_and(dark, foot)
+    # Thickness prior on marketing only — drop thin furniture strokes from barriers
+    if marketing:
+        dist = cv2.distanceTransform(
+            cv2.morphologyEx(dark, cv2.MORPH_CLOSE, kernel, iterations=1), cv2.DIST_L2, 5
+        )
+        dark_thick = ((dist >= 1.0) & (dark > 0)).astype(np.uint8) * 255
+        if cv2.countNonZero(dark_thick) >= 60:
+            dark = dark_thick
     n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
     ink = np.zeros_like(closed)
     min_ink = max(25, int(min(w, h) * 0.002))
@@ -1204,22 +1261,25 @@ def _opencv_rooms_and_walls(
         ww = int(stats[i, cv2.CC_STAT_WIDTH])
         hh = int(stats[i, cv2.CC_STAT_HEIGHT])
         aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
-        if area >= min_ink and (aspect >= 2.0 or area >= 160):
+        if area >= min_ink and (aspect >= 2.2 or area >= (500 if marketing else 220)):
             ink[labels == i] = 255
-    # Lightly blend adaptive ink for CAD thin lines
-    n2, lab2, st2, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
-    for i in range(1, n2):
-        area = int(st2[i, cv2.CC_STAT_AREA])
-        ww = int(st2[i, cv2.CC_STAT_WIDTH])
-        hh = int(st2[i, cv2.CC_STAT_HEIGHT])
-        aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
-        if area >= min_ink * 2 and aspect >= 3.0:
-            ink[lab2 == i] = 255
-    notes.append("OpenCV 去噪：保留細長深色結構墨跡，略過緊湊家具／文字。")
+    # CAD: lightly blend long adaptive strokes; marketing: skip (furniture noise)
+    if not marketing:
+        n2, lab2, st2, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+        for i in range(1, n2):
+            area = int(st2[i, cv2.CC_STAT_AREA])
+            ww = int(st2[i, cv2.CC_STAT_WIDTH])
+            hh = int(st2[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            if area >= min_ink * 2 and aspect >= 3.5:
+                ink[lab2 == i] = 255
+    notes.append(
+        "OpenCV 去噪：保留細長厚墨跡結構牆，略過緊湊家具／文字"
+        f"（style={plan_style}）。"
+    )
 
     # Dilate barriers to close door gaps for room CC (CAD fills need more)
-    _sat_d = float((cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[:, :, 1] > 80).mean())
-    dil_it = 2 if _sat_d > 0.10 else 4
+    dil_it = 3 if marketing else 5
     barrier = cv2.dilate(ink, kernel, iterations=dil_it)
     free = cv2.bitwise_and(foot, cv2.bitwise_not(barrier))
     free = cv2.morphologyEx(free, cv2.MORPH_OPEN, kernel, iterations=2)
@@ -1265,15 +1325,17 @@ def _opencv_rooms_and_walls(
         if cx_px < x0 or cx_px > x1 or cy_px < y0 or cy_px > y1:
             chrome_skip += 1
             continue
-        # Always AABB room boxes — jagged free-space contours fail overlay QA
+        # Ortho / AABB from mask — L-shaped when fill low; else AABB
         ys, xs = np.where(mask > 0)
         if xs.size < 40:
             continue
-        xa, xb = int(xs.min()), int(xs.max())
-        ya, yb = int(ys.min()), int(ys.max())
-        poly = np.array(
-            [[xa, ya], [xb, ya], [xb, yb], [xa, yb]], dtype=np.float64
-        )
+        poly = _ortho_polygon_from_mask(mask, max_verts=10)
+        if poly is None:
+            xa, xb = int(xs.min()), int(xs.max())
+            ya, yb = int(ys.min()), int(ys.max())
+            poly = np.array(
+                [[xa, ya], [xb, ya], [xb, yb], [xa, yb]], dtype=np.float64
+            )
         room_polys_px.append(poly)
         verts = [
             _vec(*_px_to_m(float(x), float(y), height_px=h, mpp=mpp)) for x, y in poly
@@ -1283,20 +1345,20 @@ def _opencv_rooms_and_walls(
                 "id": f"room-{len(rooms)+1}",
                 "type": "房間",
                 "vertices": verts,
-                "confidence": 0.55,
+                "confidence": 0.58,
             }
         )
     if chrome_skip:
         notes.append(f"略過 chrome／底欄／細長區域房間候選 {chrome_skip} 個。")
 
     # Cap over-segmentation: keep largest rooms (marketing watershed can fragment)
-    if len(rooms) > 7:
+    if len(rooms) > 9:
         scored = []
         for r, poly in zip(rooms, room_polys_px):
             area = float(cv2.contourArea(poly.astype(np.float32).reshape(-1, 1, 2)))
             scored.append((area, r, poly))
         scored.sort(key=lambda t: t[0], reverse=True)
-        keep = scored[:7]
+        keep = scored[:9]
         rooms = [t[1] for t in keep]
         room_polys_px = [t[2] for t in keep]
         for i, r in enumerate(rooms):
@@ -1326,7 +1388,7 @@ def _opencv_rooms_and_walls(
                 inter = iw * ih
                 a1 = max(1.0, (xa[1] - xa[0]) * (ya[1] - ya[0]))
                 a2 = max(1.0, (xb[1] - xb[0]) * (yb[1] - yb[0]))
-                if inter / min(a1, a2) >= 0.45:
+                if inter / min(a1, a2) >= 0.58:
                     xa = [min(xa[0], xb[0]), max(xa[1], xb[1])]
                     ya = [min(ya[0], yb[0]), max(ya[1], yb[1])]
                     used[j] = True
@@ -1356,7 +1418,8 @@ def _opencv_rooms_and_walls(
 
     # Primary walls: structural dark-ink Hough (straighter than room edges)
     walls, ink_struct = _structural_walls_from_ink(
-        bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot, max_add=18
+        bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot,
+        max_add=28, plan_style=plan_style,
     )
     # Prefer structural ink for support tests / barriers when richer
     if int(ink_struct.sum() // 255) > int(ink.sum() // 255):
@@ -1415,7 +1478,7 @@ def _opencv_rooms_and_walls(
     dark_pct = float(dark_otsu.mean()) / 255.0
     hsv_full = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     sat_frac = float((hsv_full[:, :, 1] > 80).mean())
-    marketing_colorful = sat_frac > 0.12
+    marketing_colorful = plan_style == "marketing" or skip_skeleton
     if dark_pct < 0.16 and not marketing_colorful and not skip_skeleton:
         k5 = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         thick = cv2.morphologyEx(dark_otsu, cv2.MORPH_OPEN, k5, iterations=1)
@@ -1493,22 +1556,41 @@ def _opencv_rooms_and_walls(
 
     # Drop walls that don't sit on dark ink (furniture ghosts / open-floor cuts)
     before = len(walls)
-    _sat_sup = float((cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[:, :, 1] > 80).mean())
-    if _sat_sup > 0.10:
-        # Marketing thin walls: ink sampling is unreliable — keep axis walls,
-        # drop only those with near-zero dark neighborhood.
+    if plan_style == "marketing":
         walls = [
             w
             for w in walls
-            if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.05)
-            or str(w.get("id", "")).startswith(("w-room", "w-m-"))
+            if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.08)
+            or str(w.get("id", "")).startswith(("w-room", "w-m-", "w-ink"))
         ]
     else:
-        walls = [
+        kept_ink = [
             w
             for w in walls
-            if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.22)
+            if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.12)
         ]
+        # CAD: if ink-only is too sparse, keep long near-axis room/skel edges
+        if len(kept_ink) < 8:
+            extras = [
+                w
+                for w in walls
+                if w not in kept_ink
+                and (
+                    str(w.get("id", "")).startswith(("w-room", "w-skel", "w-m-"))
+                    or _seg_length_m(w) >= 1.2
+                )
+                and _axis_align_score(
+                    w["a"]["x"], w["a"]["y"], w["b"]["x"], w["b"]["y"]
+                )
+                >= 0.95
+            ]
+            extras = sorted(extras, key=_seg_length_m, reverse=True)[:12]
+            walls = kept_ink + extras
+            notes.append(
+                f"CAD 墨跡牆偏少（{len(kept_ink)}），保留長近軸房間／骨架邊 {len(extras)}。"
+            )
+        else:
+            walls = kept_ink
     if before - len(walls):
         notes.append(f"剔除無墨跡支撐的偽牆 {before - len(walls)} 條。")
 
@@ -1520,7 +1602,7 @@ def _opencv_rooms_and_walls(
     notes.extend(tx_notes)
 
     # Prefer structural / long / axis-aligned when capping
-    max_walls = 20
+    max_walls = 22
     if len(walls) > max_walls:
         def _wall_keep_key(wseg: dict[str, Any]) -> tuple:
             wid = str(wseg.get("id", ""))
@@ -1576,16 +1658,57 @@ def _nearest_wall_id(
     return best_id
 
 
+def _layout_extent_m(
+    walls: list[dict[str, Any]],
+    rooms: list[dict[str, Any]] | None = None,
+) -> tuple[float, float, float, float] | None:
+    xs: list[float] = []
+    ys: list[float] = []
+    for w in walls:
+        xs.extend([w["a"]["x"], w["b"]["x"]])
+        ys.extend([w["a"]["y"], w["b"]["y"]])
+    if rooms:
+        for r in rooms:
+            box = _room_aabb(r)
+            if box:
+                xs.extend([box[0], box[2]])
+                ys.extend([box[1], box[3]])
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _is_exterior_wall_line(
+    orient: str,
+    const: float,
+    extent: tuple[float, float, float, float],
+    *,
+    margin_m: float = 0.85,
+) -> bool:
+    min_x, min_y, max_x, max_y = extent
+    if orient == "h":
+        return abs(const - min_y) < margin_m or abs(const - max_y) < margin_m
+    return abs(const - min_x) < margin_m or abs(const - max_x) < margin_m
+
+
 def _openings_from_gaps(
     walls: list[dict[str, Any]],
     *,
+    rooms: list[dict[str, Any]] | None = None,
     door_range: tuple[float, float] = (0.55, 1.25),
-    window_range: tuple[float, float] = (0.9, 2.6),
+    window_range: tuple[float, float] = (0.85, 2.8),
+    allow_gap_windows: bool = True,
+    max_gap_windows: int = 6,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """Collinear wall gaps → door (typical leaf) or window (wider)."""
+    """Collinear wall gaps → door (typical leaf) or carefully exterior window.
+
+    Gap windows ONLY on near-exterior collinear wall lines (not peri-flood midpoints,
+    not interior furniture gaps). Doors allowed on any collinear gap in door range.
+    """
     notes: list[str] = []
     doors: list[dict[str, Any]] = []
     windows: list[dict[str, Any]] = []
+    extent = _layout_extent_m(walls, None) or _layout_extent_m(walls, rooms)
     hv: list[tuple[str, str, float, float, float]] = []
     for w in walls:
         ax, ay = w["a"]["x"], w["a"]["y"]
@@ -1597,30 +1720,22 @@ def _openings_from_gaps(
             t0, t1 = sorted([ay, by])
             hv.append(("v", w["id"], (ax + bx) / 2, t0, t1))
 
-    groups: dict[tuple[str, int], list[tuple[str, float, float]]] = defaultdict(list)
+    groups: dict[tuple[str, int], list[tuple[str, float, float, float]]] = defaultdict(list)
     for orient, wid, const, t0, t1 in hv:
-        # 0.1 m bins — more stable than 0.05 m for marketing scale noise
         key = (orient, int(round(const * 10)))
-        groups[key].append((wid, t0, t1))
+        groups[key].append((wid, const, t0, t1))
 
+    win_cands: list[tuple[float, dict[str, Any]]] = []
     for (orient, _), segs in groups.items():
-        segs = sorted(segs, key=lambda s: s[1])
+        segs = sorted(segs, key=lambda s: s[2])
         for i in range(len(segs) - 1):
-            wid_a, _, t1 = segs[i]
-            _, t0_next, _ = segs[i + 1]
+            wid_a, const, _, t1 = segs[i]
+            _, _, t0_next, _ = segs[i + 1]
             gap = t0_next - t1
-            const = None
-            for w in walls:
-                if w["id"] == wid_a:
-                    if orient == "h":
-                        const = (w["a"]["y"] + w["b"]["y"]) / 2
-                        oa, ob = (t1, const), (t0_next, const)
-                    else:
-                        const = (w["a"]["x"] + w["b"]["x"]) / 2
-                        oa, ob = (const, t1), (const, t0_next)
-                    break
-            if const is None:
-                continue
+            if orient == "h":
+                oa, ob = (t1, const), (t0_next, const)
+            else:
+                oa, ob = (const, t1), (const, t0_next)
             d0, d1 = door_range
             w0, w1 = window_range
             if d0 <= gap <= d1:
@@ -1640,26 +1755,299 @@ def _openings_from_gaps(
                         },
                     }
                 )
-            elif w0 < gap <= w1:
-                windows.append(
-                    {
-                        "id": f"win-gap-{len(windows)+1}",
-                        "wallId": wid_a,
-                        "opening": _seg(oa, ob),
-                        "confidence": 0.42,
-                        "sillHeightM": SILL_HEIGHT_M,
-                        "sillHeightAssumed": True,
-                    }
+            elif allow_gap_windows and w0 < gap <= w1 and extent is not None:
+                if not _is_exterior_wall_line(orient, const, extent, margin_m=0.95):
+                    continue
+                win_cands.append(
+                    (
+                        gap,
+                        {
+                            "id": "win-gap-tmp",
+                            "wallId": wid_a,
+                            "opening": _seg(oa, ob),
+                            "confidence": 0.40,
+                            "sillHeightM": SILL_HEIGHT_M,
+                            "sillHeightAssumed": True,
+                        },
+                    )
                 )
+
+    win_cands.sort(key=lambda t: t[0], reverse=True)
+    for _, win in win_cands[:max_gap_windows]:
+        win["id"] = f"win-gap-{len(windows)+1}"
+        windows.append(win)
 
     if doors or windows:
         notes.append(
-            f"由共線牆段缺口推估門 {len(doors)}、窗 {len(windows)}"
-            f"（門 {door_range[0]}–{door_range[1]} m／窗 {window_range[0]}–{window_range[1]} m）。"
+            f"由共線牆段缺口推估門 {len(doors)}、外牆缺口窗 {len(windows)}"
+            f"（門 {door_range[0]}–{door_range[1]} m／窗 {window_range[0]}–{window_range[1]} m，"
+            "窗僅近外框共線缺口）。"
         )
     else:
-        notes.append("未從牆段缺口推估到門／窗；將嘗試外牆窗與連通性補開口。")
+        notes.append("未從牆段缺口推估到門／窗；將嘗試模型開口與連通性補門。")
     return doors, windows, notes
+
+
+def _windows_from_parallel_strokes(
+    bgr: np.ndarray,
+    walls: list[dict[str, Any]],
+    rooms: list[dict[str, Any]],
+    *,
+    mpp: float,
+    foot: np.ndarray | None = None,
+    max_add: int = 5,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Marketing/CAD window glyphs = 2–3 parallel strokes near exterior walls.
+
+    Carefully: only clusters near layout exterior AND near an existing wall segment.
+    Avoids peri-flood midpoints on every outer edge.
+    """
+    notes: list[str] = []
+    if not walls or max_add <= 0:
+        return [], notes
+    # Walls-only extent — CubiCasa rooms can bleed to chrome and inflate bbox
+    extent = _layout_extent_m(walls, None) or _layout_extent_m(walls, rooms)
+    if extent is None:
+        return [], notes
+    h, w = bgr.shape[:2]
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    edges = cv2.Canny(blur, 45, 130)
+    if foot is not None:
+        edges = cv2.bitwise_and(edges, foot)
+    min_len = max(28, int(min(h, w) * 0.04))
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180, threshold=22, minLineLength=max(22, min_len - 8), maxLineGap=14
+    )
+    if lines is None:
+        return [], notes
+    min_x, min_y, max_x, max_y = extent
+    # Collect near-axis segments in metres
+    segs: list[tuple[str, float, float, float]] = []  # orient, const, t0, t1
+    for x1, y1, x2, y2 in lines.reshape(-1, 4):
+        if abs(x2 - x1) < 6:
+            x2 = x1
+        if abs(y2 - y1) < 6:
+            y2 = y1
+        if abs(x2 - x1) >= 8 and abs(y2 - y1) >= 8:
+            continue
+        a = _px_to_m(float(x1), float(y1), height_px=h, mpp=mpp)
+        b = _px_to_m(float(x2), float(y2), height_px=h, mpp=mpp)
+        if abs(a[1] - b[1]) < 0.12 and abs(a[0] - b[0]) > 0.55:
+            t0, t1 = sorted([a[0], b[0]])
+            const = (a[1] + b[1]) / 2
+            segs.append(("h", const, t0, t1))
+        elif abs(a[0] - b[0]) < 0.12 and abs(a[1] - b[1]) > 0.55:
+            t0, t1 = sorted([a[1], b[1]])
+            const = (a[0] + b[0]) / 2
+            segs.append(("v", const, t0, t1))
+
+    # Group parallel strokes within 0.35 m of each other near exterior
+    used = [False] * len(segs)
+    cands: list[tuple[float, tuple[float, float], tuple[float, float], str]] = []
+    for i, (ori, c0, t0a, t1a) in enumerate(segs):
+        if used[i]:
+            continue
+        # Must be near exterior const
+        if ori == "h":
+            if not (abs(c0 - min_y) < 1.4 or abs(c0 - max_y) < 1.4):
+                continue
+        else:
+            if not (abs(c0 - min_x) < 1.4 or abs(c0 - max_x) < 1.4):
+                continue
+        cluster = [(c0, t0a, t1a)]
+        used[i] = True
+        for j in range(i + 1, len(segs)):
+            if used[j]:
+                continue
+            ori2, c1, t0b, t1b = segs[j]
+            if ori2 != ori:
+                continue
+            if abs(c1 - c0) > 0.55:
+                continue
+            # overlap in t
+            ov0, ov1 = max(t0a, t0b), min(t1a, t1b)
+            if ov1 - ov0 < 0.45:
+                continue
+            cluster.append((c1, t0b, t1b))
+            used[j] = True
+        if len(cluster) < 2:
+            continue
+        # Prefer overlap; else union clipped to typical window length
+        t0_ov = max(s[1] for s in cluster)
+        t1_ov = min(s[2] for s in cluster)
+        if t1_ov - t0_ov >= 0.7:
+            t0, t1 = t0_ov, min(t1_ov, t0_ov + 2.6)
+        else:
+            t0_u = min(s[1] for s in cluster)
+            t1_u = max(s[2] for s in cluster)
+            span = t1_u - t0_u
+            if span < 0.7:
+                continue
+            # Center a 1.2–2.0 m window in the union
+            mid = (t0_u + t1_u) / 2
+            half = min(1.0, max(0.6, span * 0.35))
+            t0, t1 = mid - half, mid + half
+        const = float(np.mean([s[0] for s in cluster]))
+        if ori == "h":
+            oa, ob = (t0, const), (t1, const)
+        else:
+            oa, ob = (const, t0), (const, t1)
+        # Must be near a wall
+        wid = _nearest_wall_id(oa, ob, walls)
+        d = _nearest_wall_dist_m(oa, ob, walls)
+        if d > 0.85:
+            continue
+        L = ((oa[0] - ob[0]) ** 2 + (oa[1] - ob[1]) ** 2) ** 0.5
+        cands.append((L, oa, ob, wid))
+
+    cands.sort(key=lambda t: t[0], reverse=True)
+    added: list[dict[str, Any]] = []
+    for L, oa, ob, wid in cands:
+        if len(added) >= max_add:
+            break
+        mx, my = (oa[0] + ob[0]) / 2, (oa[1] + ob[1]) / 2
+        if any(
+            ((k["opening"]["a"]["x"] + k["opening"]["b"]["x"]) / 2 - mx) ** 2
+            + ((k["opening"]["a"]["y"] + k["opening"]["b"]["y"]) / 2 - my) ** 2
+            < 0.85 ** 2
+            for k in added
+        ):
+            continue
+        added.append(
+            {
+                "id": f"win-par-{len(added)+1}",
+                "wallId": wid,
+                "opening": _seg(oa, ob),
+                "confidence": 0.37,
+                "sillHeightM": SILL_HEIGHT_M,
+                "sillHeightAssumed": True,
+            }
+        )
+    if added:
+        notes.append(
+            f"外牆平行筆劃窗符號 {len(added)}（雙／三線窗，貼近外框牆段）。"
+        )
+    return added, notes
+
+
+def _windows_from_exterior_ink(
+    bgr: np.ndarray,
+    walls: list[dict[str, Any]],
+    rooms: list[dict[str, Any]],
+    *,
+    mpp: float,
+    plan_style: str,
+    max_add: int = 5,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Detect classic double-line window symbols on near-exterior structural walls.
+
+    Looks for short bright gaps / parallel thin strokes along exterior ink walls —
+    NOT peri midpoints of every outer wall (that spam failed QA).
+    """
+    notes: list[str] = []
+    if max_add <= 0 or not walls:
+        return [], notes
+    extent = _layout_extent_m(walls, None) or _layout_extent_m(walls, rooms)
+    if extent is None:
+        return [], notes
+    h, w = bgr.shape[:2]
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    # Bright openings / window cavities along walls
+    if plan_style == "marketing":
+        bright = (blur > 190).astype(np.uint8) * 255
+    else:
+        bright = (blur > 200).astype(np.uint8) * 255
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, k3, iterations=1)
+
+    min_x, min_y, max_x, max_y = extent
+    cands: list[tuple[float, dict[str, Any]]] = []
+    for wall in walls:
+        ax, ay = wall["a"]["x"], wall["a"]["y"]
+        bx, by = wall["b"]["x"], wall["b"]["y"]
+        L = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+        if L < 1.4:
+            continue
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        exterior = (
+            abs(mx - min_x) < 0.9
+            or abs(mx - max_x) < 0.9
+            or abs(my - min_y) < 0.9
+            or abs(my - max_y) < 0.9
+        )
+        if not exterior:
+            continue
+        # Sample along wall for bright cavity runs (window glazing / sill)
+        horiz = abs(ay - by) < 0.15
+        hits = []
+        for t in np.linspace(0.08, 0.92, 24):
+            x = ax + (bx - ax) * t
+            y = ay + (by - ay) * t
+            px = int(round(x / mpp))
+            py = int(round(h - y / mpp))
+            ok = False
+            for dy in (-3, -1, 0, 1, 3):
+                for dx in (-3, -1, 0, 1, 3):
+                    xx, yy = px + dx, py + dy
+                    if 0 <= xx < w and 0 <= yy < h and bright[yy, xx] > 0:
+                        ok = True
+                        break
+                if ok:
+                    break
+            hits.append((t, ok))
+        # Find contiguous bright runs → candidate windows
+        run_t0 = None
+        for t, ok in hits + [(1.0, False)]:
+            if ok and run_t0 is None:
+                run_t0 = t
+            elif not ok and run_t0 is not None:
+                run_len = (t - run_t0) * L
+                if 0.7 <= run_len <= 2.8:
+                    tm = (run_t0 + t) / 2
+                    open_len = min(run_len, L * 0.45)
+                    hx = (bx - ax) / L
+                    hy = (by - ay) / L
+                    cx = ax + (bx - ax) * tm
+                    cy = ay + (by - ay) * tm
+                    oa = (cx - hx * open_len / 2, cy - hy * open_len / 2)
+                    ob = (cx + hx * open_len / 2, cy + hy * open_len / 2)
+                    cands.append(
+                        (
+                            run_len,
+                            {
+                                "id": "win-ink-tmp",
+                                "wallId": wall["id"],
+                                "opening": _seg(oa, ob),
+                                "confidence": 0.38,
+                                "sillHeightM": SILL_HEIGHT_M,
+                                "sillHeightAssumed": True,
+                            },
+                        )
+                    )
+                run_t0 = None
+    cands.sort(key=lambda t: t[0], reverse=True)
+    added: list[dict[str, Any]] = []
+    for _, win in cands:
+        if len(added) >= max_add:
+            break
+        a, b = win["opening"]["a"], win["opening"]["b"]
+        mx, my = (a["x"] + b["x"]) / 2, (a["y"] + b["y"]) / 2
+        if any(
+            ((k["opening"]["a"]["x"] + k["opening"]["b"]["x"]) / 2 - mx) ** 2
+            + ((k["opening"]["a"]["y"] + k["opening"]["b"]["y"]) / 2 - my) ** 2
+            < 0.7 ** 2
+            for k in added
+        ):
+            continue
+        win["id"] = f"win-ink-{len(added)+1}"
+        added.append(win)
+    if added:
+        notes.append(
+            f"外牆墨跡亮縫補窗 {len(added)}（僅近外框牆段上的連續亮帶，非 peri 中點）。"
+        )
+    return added, notes
 
 
 def _perimeter_windows(
@@ -1933,6 +2321,10 @@ def run_yolo_detect(
     hsv0 = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     sat_frac0 = float((hsv0[:, :, 1] > 80).mean())
     marketing_colorful = sat_frac0 > 0.12
+    # Plan style from ORIGINAL (before ROI white-mask kills sat / stroke stats)
+    plan_style = _plan_style_from_bgr(bgr, orig_sat_frac=sat_frac0)
+    if marketing_colorful:
+        plan_style = "marketing"
 
     x0, y0, x1, y1, roi_notes = _detect_content_roi(bgr)
     # Mask titles/headers/banners/chrome BEFORE YOLO / CubiCasa / OpenCV
@@ -1945,10 +2337,11 @@ def run_yolo_detect(
         *roi_notes,
         *scale_notes,
         f"天花板假設 {CEILING_HEIGHT_M} m；牆厚假設 {WALL_THICKNESS_M} m；窗台假設 {SILL_HEIGHT_M} m。",
+        f"平面圖風格（原圖）：{plan_style}（sat>80≈{sat_frac0*100:.1f}%）。",
     ]
-    if marketing_colorful:
+    if plan_style == "marketing":
         notes.append(
-            f"原圖高彩度（sat>80≈{sat_frac0*100:.1f}%）→ 略過 CAD 骨架牆，避免行銷偽結構。"
+            "行銷／線稿風格 → 深色筆劃牆＋略過 CAD 骨架 Hough，避免傢具偽結構。"
         )
 
     names: dict[int, str] = {}
@@ -2104,7 +2497,9 @@ def run_yolo_detect(
         bgr,
         mpp=mpp,
         content_roi=(x0, y0, x1, y1),
-        skip_skeleton=marketing_colorful,
+        skip_skeleton=(plan_style == "marketing"),
+        plan_style=plan_style,
+        orig_sat_frac=sat_frac0,
     )
     notes.extend(cv_notes)
 
@@ -2124,14 +2519,38 @@ def run_yolo_detect(
     except Exception as e:  # noqa: BLE001
         notes.append(f"CubiCasa 略過：{e}")
 
-    # Structure: prefer OpenCV room-edge walls (stable counts); YOLO/CubiCasa walls sparse-only
+    # Prefer richer room topology (split bedrooms) — CubiCasa floor+wall barriers or OpenCV
     rooms = cv_rooms
-    if cubi and cubi.get("rooms") and len(cubi["rooms"]) > len(rooms):
-        rooms = cubi["rooms"]
-        notes.append("房間採用 CubiCasa floor 連通區域（多於 OpenCV）。")
+    roi_m = (
+        x0 * mpp,
+        (h - y1) * mpp,
+        x1 * mpp,
+        (h - y0) * mpp,
+    )
+    if cubi and cubi.get("rooms"):
+        cr = cubi["rooms"]
+        cr_f, cr_notes = _filter_chrome_rooms(cr, roi_m=roi_m)
+        notes.extend(cr_notes)
+        # Prefer CubiCasa only if chrome-filtered set still has good topology
+        if len(cr_f) >= max(4, len(cv_rooms) - 1):
+            rooms = cr_f
+            notes.append(
+                f"房間採用 CubiCasa floor＋牆屏障（{len(cr_f)}，OpenCV={len(cv_rooms)}）。"
+            )
+        elif len(cr_f) >= 3 and len(cr_f) >= len(cv_rooms):
+            rooms = cr_f
+            notes.append(
+                f"房間採用 CubiCasa（chrome 過濾後 {len(cr_f)}）。"
+            )
+        else:
+            notes.append(
+                f"CubiCasa 房間 chrome 過濾後僅 {len(cr_f)}，改用 OpenCV {len(cv_rooms)}。"
+            )
     elif yolo_rooms and len(yolo_rooms) >= max(3, len(cv_rooms)):
         rooms = yolo_rooms
         notes.append("房間採用 YOLO 遮罩。")
+    rooms, chrome2 = _filter_chrome_rooms(rooms, roi_m=roi_m)
+    notes.extend(chrome2)
 
     walls = list(cv_walls)
     if yolo_walls:
@@ -2142,38 +2561,43 @@ def run_yolo_detect(
             notes.append(f"併入 YOLO 長牆 {len(long_yolo)}。")
     if cubi and cubi.get("wall_segs"):
         cubi_walls = cubi["wall_segs"]
-        if len(cubi_walls) <= 40:
-            for i, (a, b) in enumerate(cubi_walls):
-                walls.append(
-                    {
-                        "id": f"w-cubi-{i+1}",
-                        "a": _vec(*a),
-                        "b": _vec(*b),
-                        "thicknessM": WALL_THICKNESS_M,
-                        "thicknessAssumed": True,
-                        "heightM": CEILING_HEIGHT_M,
-                    }
-                )
-            notes.append(f"併入 CubiCasa 牆段 {len(cubi_walls)}。")
-        else:
-            notes.append(
-                f"CubiCasa 牆段過碎（{len(cubi_walls)}），已捨棄以免膨脹偽牆。"
+        # Keep longest CubiCasa walls only — avoid furniture fragments
+        cubi_walls = sorted(
+            cubi_walls,
+            key=lambda ab: ((ab[0][0] - ab[1][0]) ** 2 + (ab[0][1] - ab[1][1]) ** 2),
+            reverse=True,
+        )[:16]
+        for i, (a, b) in enumerate(cubi_walls):
+            L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+            if L < 0.8:
+                continue
+            walls.append(
+                {
+                    "id": f"w-cubi-{i+1}",
+                    "a": _vec(*a),
+                    "b": _vec(*b),
+                    "thicknessM": WALL_THICKNESS_M,
+                    "thicknessAssumed": True,
+                    "heightM": CEILING_HEIGHT_M,
+                }
             )
+        notes.append(f"併入 CubiCasa 長牆至多 16（實際 {len([1 for ab in cubi_walls if ((ab[0][0]-ab[1][0])**2+(ab[0][1]-ab[1][1])**2)**0.5>=0.8])}）。")
 
     walls, merge_notes = _merge_collinear_walls(walls, min_len_m=0.7)
     notes.extend(merge_notes)
-    walls, tx_notes = _filter_transecting_walls(walls, rooms, max_ratio=0.28)
+    tx_ratio = 0.40 if len(walls) < 12 else 0.28
+    walls, tx_notes = _filter_transecting_walls(walls, rooms, max_ratio=tx_ratio)
     notes.extend(tx_notes)
     # Drop remaining non-structural short diagonals
     walls = [
         w
         for w in walls
         if _is_structural_edge(
-            w["a"]["x"], w["a"]["y"], w["b"]["x"], w["b"]["y"], min_len=0.65
+            w["a"]["x"], w["a"]["y"], w["b"]["x"], w["b"]["y"], min_len=0.55
         )
     ]
-    # Prefer fewer correct walls — hard cap 20
-    if len(walls) > 20:
+    # Prefer fewer correct walls — hard cap 22
+    if len(walls) > 22:
         def _wall_keep_key(w: dict[str, Any]) -> tuple:
             wid = str(w.get("id", ""))
             L = _seg_length_m(w)
@@ -2190,8 +2614,8 @@ def run_yolo_detect(
                 prio = 1
             return (prio, -align, -L)
 
-        walls = sorted(walls, key=_wall_keep_key)[:20]
-        notes.append("牆段過多，最終截斷至 20（優先結構／近軸長牆）。")
+        walls = sorted(walls, key=_wall_keep_key)[:22]
+        notes.append("牆段過多，最終截斷至 22（優先結構／近軸長牆）。")
 
     def _opening_len(op: dict[str, Any]) -> float:
         a, b = op["opening"]["a"], op["opening"]["b"]
@@ -2250,9 +2674,9 @@ def run_yolo_detect(
             key=lambda ab: ((ab[0][0] - ab[1][0]) ** 2 + (ab[0][1] - ab[1][1]) ** 2),
             reverse=True,
         )
-        for i, (a, b) in enumerate(cubi_wins[:5]):
+        for i, (a, b) in enumerate(cubi_wins[:8]):
             wlen = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-            if wlen < 0.7 or wlen > 3.0:
+            if wlen < 0.55 or wlen > 3.5:
                 continue
             windows.append(
                 {
@@ -2265,22 +2689,55 @@ def run_yolo_detect(
                 }
             )
 
-    gap_doors, gap_wins, gap_notes = _openings_from_gaps(walls)
+    need_gap_wins = len(windows) < 2
+    gap_doors, gap_wins, gap_notes = _openings_from_gaps(
+        walls,
+        rooms=rooms,
+        allow_gap_windows=need_gap_wins,
+        max_gap_windows=6,
+    )
     notes.extend(gap_notes)
-    if len(doors) < 2:
+    if len(doors) < 3:
         doors.extend(gap_doors)
         if gap_doors:
             notes.append("已併用缺口啟發式補門。")
-    # Do NOT invent gap windows — same failure mode as peri spam (QA)
-    if gap_wins:
-        notes.append(f"略過缺口啟發式窗 {len(gap_wins)}（僅保留模型偵測窗）。")
+    if need_gap_wins and gap_wins:
+        windows.extend(gap_wins)
+        notes.append(
+            f"模型窗不足（{len(windows) - len(gap_wins)}），"
+            f"併用外牆共線缺口窗 {len(gap_wins)}（非 peri 中點）。"
+        )
+    elif gap_wins:
+        notes.append(f"略過缺口窗 {len(gap_wins)}（模型窗已足夠）。")
+
+    # If still few windows: exterior ink bright-seam + parallel stroke glyphs
+    if len(windows) < 2:
+        ink_wins, ink_notes = _windows_from_exterior_ink(
+            bgr, walls, rooms, mpp=mpp, plan_style=plan_style, max_add=5
+        )
+        notes.extend(ink_notes)
+        windows.extend(ink_wins)
+    if len(windows) < 3:
+        # footprint for stroke filter
+        foot = _footprint_mask(bgr, x0, y0, x1, y1)
+        par_wins, par_notes = _windows_from_parallel_strokes(
+            bgr, walls, rooms, mpp=mpp, foot=foot, max_add=6
+        )
+        notes.extend(par_notes)
+        windows.extend(par_wins)
 
     # Reject openings far from walls BEFORE peri/access heuristics
+    # Looser snap when wall coverage sparse (CAD mid-gray often under-detected)
+    loose = len(walls) < 10
     doors, n_drop_d, n_snap_d = _filter_openings_near_walls(
-        doors, walls, max_dist_m=0.45, snap_max_m=0.85
+        doors, walls,
+        max_dist_m=0.70 if loose else 0.45,
+        snap_max_m=1.25 if loose else 0.85,
     )
     windows, n_drop_w, n_snap_w = _filter_openings_near_walls(
-        windows, walls, max_dist_m=0.55, snap_max_m=0.95
+        windows, walls,
+        max_dist_m=0.80 if loose else 0.55,
+        snap_max_m=1.35 if loose else 0.95,
     )
     if n_drop_d or n_drop_w or n_snap_d or n_snap_w:
         notes.append(
@@ -2293,16 +2750,16 @@ def run_yolo_detect(
     peri_ids = [w for w in windows if str(w.get("id", "")).startswith("win-peri")]
     if peri_ids:
         windows = [w for w in windows if not str(w.get("id", "")).startswith("win-peri")]
-    notes.append("已禁止外牆啟發式 peri 窗（僅保留模型偵測／缺口推估窗）。")
+    notes.append("已禁止 peri 中點補窗；保留模型／外牆共線缺口／外牆墨跡亮縫窗。")
 
     doors = _dedupe_openings(doors)
     windows = _dedupe_openings(windows)
     if len(doors) > 8:
         doors = sorted(doors, key=_opening_len, reverse=True)[:8]
         notes.append("門候選過多，截斷至 8。")
-    if len(windows) > 6:
-        windows = sorted(windows, key=_opening_len, reverse=True)[:6]
-        notes.append("窗候選過多，截斷至 6。")
+    if len(windows) > 8:
+        windows = sorted(windows, key=_opening_len, reverse=True)[:8]
+        notes.append("窗候選過多，截斷至 8。")
 
     for d in doors:
         oa = (d["opening"]["a"]["x"], d["opening"]["a"]["y"])
