@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "meta": {
+    "sourceName": "two-room.png",
+    "imageWidthPx": 1100,
+    "imageHeightPx": 800,
+    "metersPerPixel": 0.01,
+    "scaleTrusted": false,
+    "coordinateOrigin": "bottom-left",
+    "ceilingHeightM": 2.8,
+    "ceilingHeightAssumed": true,
+    "detectionConfidence": 0.7,
+    "notes": [
+      "圖面標註尺寸未採信（NTS）。比例由牆厚假設 0.12 m 反推，scaleTrusted 固定為 false。",
+      "天花板高度假設為 2.8 m。",
+      "窗台高度假設為 0.9 m。",
+      "上方外牆以實心粗線繪製，仍視為牆。"
+    ]
+  },
+  "walls": [
+    {
+      "id": "w_c5d1c8c8",
+      "a": {
+        "x": 1.6,
+        "y": 2
+      },
+      "b": {
+        "x": 1.6,
+        "y": 6.2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_217d6ff8",
+      "a": {
+        "x": 1.6,
+        "y": 6.2
+      },
+      "b": {
+        "x": 9.4,
+        "y": 6.2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_d8a21197",
+      "a": {
+        "x": 9.4,
+        "y": 2
+      },
+      "b": {
+        "x": 9.4,
+        "y": 3.8
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_10b0eedb",
+      "a": {
+        "x": 9.4,
+        "y": 5
+      },
+      "b": {
+        "x": 9.4,
+        "y": 6.2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_a45979ab",
+      "a": {
+        "x": 1.6,
+        "y": 2
+      },
+      "b": {
+        "x": 2.4,
+        "y": 2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_a058dbb6",
+      "a": {
+        "x": 3.6,
+        "y": 2
+      },
+      "b": {
+        "x": 9.4,
+        "y": 2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_8f6515fc",
+      "a": {
+        "x": 5.2,
+        "y": 4.6
+      },
+      "b": {
+        "x": 5.2,
+        "y": 6.2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_042d76e2",
+      "a": {
+        "x": 5.2,
+        "y": 2
+      },
+      "b": {
+        "x": 5.2,
+        "y": 3.7
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    }
+  ],
+  "doors": [
+    {
+      "id": "d_737954ef",
+      "kind": "swing",
+      "wallId": "w_8f6515fc",
+      "opening": {
+        "a": {
+          "x": 5.2,
+          "y": 3.7
+        },
+        "b": {
+          "x": 5.2,
+          "y": 4.6
+        }
+      },
+      "confidence": 0.8,
+      "swing": {
+        "hinge": {
+          "x": 5.2,
+          "y": 4.6
+        },
+        "leafLengthM": 0.9,
+        "openDirection": "cw",
+        "arcQuarter": true
+      }
+    },
+    {
+      "id": "d_93561a78",
+      "kind": "sliding",
+      "wallId": "w_a45979ab",
+      "opening": {
+        "a": {
+          "x": 2.4,
+          "y": 2
+        },
+        "b": {
+          "x": 3.6,
+          "y": 2
+        }
+      },
+      "confidence": 0.72,
+      "sliding": {
+        "leafA": {
+          "a": {
+            "x": 2.5,
+            "y": 2.03
+          },
+          "b": {
+            "x": 3.2,
+            "y": 2.03
+          }
+        },
+        "leafB": {
+          "a": {
+            "x": 2.8,
+            "y": 1.97
+          },
+          "b": {
+            "x": 3.5,
+            "y": 1.97
+          }
+        }
+      }
+    }
+  ],
+  "windows": [
+    {
+      "id": "win_a45b24b5",
+      "wallId": "w_10b0eedb",
+      "opening": {
+        "a": {
+          "x": 9.4,
+          "y": 3.8
+        },
+        "b": {
+          "x": 9.4,
+          "y": 5
+        }
+      },
+      "confidence": 0.75,
+      "sillHeightM": 0.9,
+      "sillHeightAssumed": true
+    }
+  ]
+}

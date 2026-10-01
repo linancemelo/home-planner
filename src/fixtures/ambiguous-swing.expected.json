@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "meta": {
+    "sourceName": "ambiguous-swing.png",
+    "imageWidthPx": 900,
+    "imageHeightPx": 640,
+    "metersPerPixel": 0.01,
+    "scaleTrusted": false,
+    "coordinateOrigin": "bottom-left",
+    "ceilingHeightM": 2.8,
+    "ceilingHeightAssumed": true,
+    "detectionConfidence": 0.48,
+    "notes": [
+      "圖面標註尺寸未採信（NTS）。比例由牆厚假設 0.12 m 反推，scaleTrusted 固定為 false。",
+      "天花板高度假設為 2.8 m。",
+      "窗台高度假設為 0.9 m。",
+      "疑似平開門但特徵不足",
+      "可能有未辨識開口。右側缺口只有門扇線，沒有約四分之一圓弧，因此不輸出門，並把共線牆段合併。"
+    ]
+  },
+  "walls": [
+    {
+      "id": "w_02237ddd",
+      "a": {
+        "x": 1.6,
+        "y": 1.6
+      },
+      "b": {
+        "x": 1.6,
+        "y": 4.8
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_add5c34e",
+      "a": {
+        "x": 1.6,
+        "y": 4.8
+      },
+      "b": {
+        "x": 7,
+        "y": 4.8
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_fffe9d35",
+      "a": {
+        "x": 7,
+        "y": 1.6
+      },
+      "b": {
+        "x": 7,
+        "y": 4.8
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_dfde65de",
+      "a": {
+        "x": 1.6,
+        "y": 1.6
+      },
+      "b": {
+        "x": 7,
+        "y": 1.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    }
+  ],
+  "doors": [],
+  "windows": []
+}
