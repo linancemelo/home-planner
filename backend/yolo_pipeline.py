@@ -684,10 +684,17 @@ def _flush_openings_to_perimeter_walls(
     walls: list[dict[str, Any]],
     *,
     max_dist_m: float = 0.75,
+    ring_only: bool = False,
+    min_len_m: float = 0.40,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Project openings onto nearest ring/exterior wall for flush alignment."""
+    """Project openings onto nearest ring/exterior wall for flush alignment.
+
+    Prefer outer-ring walls (true perimeter windows/doors). When ring_only,
+    never snap onto interior ink partitions (avoids fake peri / furniture walls).
+    Drop degenerate near-zero openings after projection.
+    """
     peri = [w for w in walls if "ring" in str(w.get("id", ""))]
-    if not peri:
+    if not peri and not ring_only:
         # fallback: near-extent walls
         extent = _layout_extent_m(walls, None)
         if extent is None:
@@ -706,23 +713,43 @@ def _flush_openings_to_perimeter_walls(
             ):
                 peri.append(w)
     if not peri:
-        return items, 0
+        # Keep items but drop zero-length
+        out0: list[dict[str, Any]] = []
+        for it in items:
+            a, b = it["opening"]["a"], it["opening"]["b"]
+            L = ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5
+            if L >= min_len_m:
+                out0.append(it)
+        return out0, 0
     out: list[dict[str, Any]] = []
     n_flush = 0
     for it in items:
         oa = (it["opening"]["a"]["x"], it["opening"]["a"]["y"])
         ob = (it["opening"]["b"]["x"], it["opening"]["b"]["y"])
+        L0 = ((oa[0] - ob[0]) ** 2 + (oa[1] - ob[1]) ** 2) ** 0.5
+        if L0 < min_len_m * 0.5:
+            continue  # drop degenerate before flush
         proj = _project_opening_onto_nearest_wall(oa, ob, peri)
         if proj is not None:
             na, nb, wid, d = proj
-            if d <= max_dist_m:
+            L1 = ((na[0] - nb[0]) ** 2 + (na[1] - nb[1]) ** 2) ** 0.5
+            if d <= max_dist_m and L1 >= min_len_m:
                 it = dict(it)
                 it["opening"] = _seg(na, nb)
                 it["wallId"] = wid
                 n_flush += 1
                 out.append(it)
                 continue
-        out.append(it)
+            if ring_only and d > max_dist_m:
+                # Interior / far from ring: drop fake exterior opening
+                continue
+        if L0 >= min_len_m and not ring_only:
+            out.append(it)
+        elif L0 >= min_len_m and ring_only:
+            # Keep only if already near a ring wall
+            dist = _nearest_wall_dist_m(oa, ob, peri)
+            if dist <= max_dist_m * 1.15:
+                out.append(it)
     return out, n_flush
 
 
@@ -1383,7 +1410,7 @@ def _outer_perimeter_ring_walls(
             am = (am[0], y)
             bm = (bm[0], y)
         L = ((am[0] - bm[0]) ** 2 + (am[1] - bm[1]) ** 2) ** 0.5
-        if L < 0.45:
+        if L < 0.55:
             continue
         # Soft ink support (perimeter may sit on thin stroke)
         probe = {
@@ -1583,6 +1610,92 @@ def _drop_walls_overlapping_ring(
     return kept
 
 
+
+def _filter_furniture_risk_walls(
+    walls: list[dict[str, Any]],
+    *,
+    plan_style: str = "cad",
+    max_interior: int = 14,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Reduce marketing furniture-risk inflated ΣL while keeping true perimeter.
+
+    Keep all ring segments. For non-ring: prefer long partitions and near-perimeter
+    walls; drop short deep-interior ink (beds/sofas/cabinets mistaken as walls).
+    CAD plans: light filter only (drop very short deep stubs).
+    """
+    notes: list[str] = []
+    if not walls:
+        return walls, notes
+    ring = [w for w in walls if "ring" in str(w.get("id", ""))]
+    rest = [w for w in walls if "ring" not in str(w.get("id", ""))]
+    extent = _layout_extent_m(ring or walls, None)
+    if extent is None:
+        return walls, notes
+    min_x, min_y, max_x, max_y = extent
+    kept_int: list[dict[str, Any]] = []
+    dropped = 0
+    marketing = plan_style == "marketing"
+    for w in rest:
+        L = _seg_length_m(w)
+        mx = (w["a"]["x"] + w["b"]["x"]) / 2
+        my = (w["a"]["y"] + w["b"]["y"]) / 2
+        d_edge = min(mx - min_x, max_x - mx, my - min_y, max_y - my)
+        if marketing:
+            # Major partitions always keep
+            if L >= 2.2:
+                kept_int.append(w)
+                continue
+            # Near true outer perimeter
+            if d_edge <= 1.05 and L >= 0.95:
+                kept_int.append(w)
+                continue
+            # Medium interior partitions (bed/bath walls)
+            if L >= 1.35 and d_edge <= 2.40:
+                kept_int.append(w)
+                continue
+            # Keep longer stubs even if deep (real partitions often <2.2m)
+            if L >= 1.8:
+                kept_int.append(w)
+                continue
+            # Short deep furniture ghosts only
+            dropped += 1
+            continue
+        # CAD: keep structural ink; only drop tiny stubs
+        if L < 0.85 and d_edge > 2.2:
+            dropped += 1
+            continue
+        kept_int.append(w)
+    # Cap interior count — prefer longer near-axis
+    if len(kept_int) > max_interior:
+        kept_int = sorted(kept_int, key=_seg_length_m, reverse=True)[:max_interior]
+        notes.append(
+            f"內隔間牆截斷至 {max_interior}（傢具偽段風險；保留較長隔間）。"
+        )
+    if dropped:
+        notes.append(
+            f"剔除傢具風險內牆 {dropped} 條（短＋深內部；外周界 ring 全留）。"
+        )
+    # Extra ΣL guard on marketing: interior total length soft-cap
+    if marketing and kept_int:
+        int_L = sum(_seg_length_m(w) for w in kept_int)
+        if int_L > 42.0:
+            kept_int = sorted(kept_int, key=_seg_length_m, reverse=True)
+            trimmed: list[dict[str, Any]] = []
+            acc = 0.0
+            for w in kept_int:
+                L = _seg_length_m(w)
+                if acc + L > 42.0 and trimmed:
+                    break
+                trimmed.append(w)
+                acc += L
+            if len(trimmed) < len(kept_int):
+                notes.append(
+                    f"行銷內牆 ΣL 軟上限：{int_L:.0f}→{acc:.0f} m（壓傢具偽段）。"
+                )
+                kept_int = trimmed
+    return ring + kept_int, notes
+
+
 def _structural_walls_from_ink(
     bgr: np.ndarray,
     *,
@@ -1634,10 +1747,12 @@ def _structural_walls_from_ink(
             hh = int(st[i, cv2.CC_STAT_HEIGHT])
             aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
             solidity = area / max(ww * hh, 1)
-            # Only drop clearly rectangular furniture mats (compact + solid)
-            if area >= 500 and aspect < 2.2 and solidity > 0.55:
+            # Drop rectangular furniture mats / beds / sofas (compact + solid)
+            if area >= 350 and aspect < 2.8 and solidity > 0.48:
                 continue
-            if area >= 40 and (aspect >= 1.5 or area >= 200):
+            if area >= 280 and aspect < 2.0:
+                continue
+            if area >= 40 and (aspect >= 1.8 or area >= 280):
                 cores[lab == i] = 255
         ink = cv2.bitwise_or(hv_lines, cores)
         # Stroke path: Canny ∩ near-dark for thin perimeter
@@ -1992,7 +2107,7 @@ def _structural_walls_from_ink(
                 else:
                     span2 = 26
                 widths.append(span + span2)
-            if widths and float(np.median(widths)) > 22:
+            if widths and float(np.median(widths)) > 14:
                 continue
         filtered.append(wseg)
     walls = filtered
@@ -2378,9 +2493,10 @@ def _opencv_rooms_and_walls(
         bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot, plan_style=plan_style,
     )
     notes.extend(ring_notes)
+    ink_cap = 28 if plan_style == "marketing" else 40
     walls, ink_struct = _structural_walls_from_ink(
         bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot,
-        max_add=40, plan_style=plan_style,
+        max_add=ink_cap, plan_style=plan_style,
     )
     # Prefer structural ink for support tests / barriers when richer
     if int(ink_struct.sum() // 255) > int(ink.sum() // 255):
@@ -2401,6 +2517,10 @@ def _opencv_rooms_and_walls(
     walls = _dedupe_parallel_walls(walls, axis_tol_m=0.34, overlap_slack_m=0.35)
     if len(walls) < before_dd:
         notes.append(f"平行牆去重：{before_dd}→{len(walls)}。")
+    walls, furn0 = _filter_furniture_risk_walls(
+        walls, plan_style=plan_style, max_interior=18 if marketing else 22
+    )
+    notes.extend(furn0)
 
     # Room-edge walls ONLY as last resort when ink walls are sparse.
     # Jagged free-space contours are the #1 source of transecting junk walls.
@@ -3393,6 +3513,416 @@ def _extend_perimeter_walls_along_ink(
     return out, notes
 
 
+
+
+def _split_aabb_rooms_by_walls(
+    rooms: list[dict[str, Any]],
+    walls: list[dict[str, Any]],
+    *,
+    min_room_m2: float = 3.0,
+    mega_m2: float = 16.0,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split coarse mega AABBs along crossing H/V walls (bed/bath separation).
+
+    When free-space CCs stay open-plan (door gaps), cut each large room box by
+    interior wall lines that traverse its interior — producing wall-aligned
+    sub-rects instead of one living+dining+kitchen mega blob.
+    """
+    notes: list[str] = []
+    if not rooms or not walls:
+        return rooms, notes
+
+    def _area_box(b: tuple[float, float, float, float]) -> float:
+        return max(0.0, (b[2] - b[0]) * (b[3] - b[1]))
+
+    # Drop mega AABBs that already contain >=2 smaller rooms (nested)
+    boxes = [(r, _room_aabb(r)) for r in rooms]
+    drop_ids: set[str] = set()
+    for r, box in boxes:
+        if not box or _area_box(box) < mega_m2:
+            continue
+        nested = 0
+        for r2, b2 in boxes:
+            if r2 is r or not b2:
+                continue
+            if _area_box(b2) >= _area_box(box) * 0.85:
+                continue
+            # b2 mostly inside box
+            ix0 = max(box[0], b2[0]); iy0 = max(box[1], b2[1])
+            ix1 = min(box[2], b2[2]); iy1 = min(box[3], b2[3])
+            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+            if inter >= 0.60 * _area_box(b2):
+                nested += 1
+        if nested >= 2:
+            drop_ids.add(str(r.get("id", "")))
+    if drop_ids:
+        rooms = [r for r in rooms if str(r.get("id", "")) not in drop_ids]
+        notes.append(
+            f"丟掉已含小房的開放廳 mega AABB {len(drop_ids)} 個（保留細分臥／衛）。"
+        )
+
+    out: list[dict[str, Any]] = []
+    n_split = 0
+    for r in rooms:
+        box = _room_aabb(r)
+        if not box:
+            out.append(r)
+            continue
+        if _area_box(box) < mega_m2:
+            out.append(r)
+            continue
+        x0, y0, x1, y1 = box
+        # Collect cutting lines: H walls with y in (y0+pad, y1-pad) spanning x,
+        # and V walls with x in (x0+pad, x1-pad) spanning y.
+        pad = 0.45
+        v_cuts: list[float] = []  # x positions
+        h_cuts: list[float] = []  # y positions
+        for w in walls:
+            ax, ay = w["a"]["x"], w["a"]["y"]
+            bx, by = w["b"]["x"], w["b"]["y"]
+            L = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+            if L < 1.0:
+                continue
+            if abs(ay - by) < 0.28:  # horizontal wall → cut vertically? No: H wall splits N/S
+                wy = 0.5 * (ay + by)
+                if y0 + pad < wy < y1 - pad:
+                    wx0, wx1 = sorted([ax, bx])
+                    overlap = min(wx1, x1) - max(wx0, x0)
+                    if overlap >= max(1.0, 0.45 * (x1 - x0)):
+                        h_cuts.append(wy)
+            elif abs(ax - bx) < 0.28:  # vertical wall → splits E/W
+                wx = 0.5 * (ax + bx)
+                if x0 + pad < wx < x1 - pad:
+                    wy0, wy1 = sorted([ay, by])
+                    overlap = min(wy1, y1) - max(wy0, y0)
+                    if overlap >= max(1.0, 0.45 * (y1 - y0)):
+                        v_cuts.append(wx)
+        # Cluster nearby cuts
+        def _cluster(vals: list[float], tol: float = 0.35) -> list[float]:
+            if not vals:
+                return []
+            vals = sorted(vals)
+            groups = [[vals[0]]]
+            for v in vals[1:]:
+                if v - groups[-1][-1] <= tol:
+                    groups[-1].append(v)
+                else:
+                    groups.append([v])
+            return [sum(g) / len(g) for g in groups]
+
+        v_cuts = _cluster(v_cuts)
+        h_cuts = _cluster(h_cuts)
+        if not v_cuts and not h_cuts:
+            out.append(r)
+            continue
+        # Build grid of sub-rects
+        xs = [x0] + v_cuts + [x1]
+        ys = [y0] + h_cuts + [y1]
+        xs = sorted(xs)
+        ys = sorted(ys)
+        sub: list[tuple[float, float, float, float]] = []
+        for i in range(len(xs) - 1):
+            for j in range(len(ys) - 1):
+                sx0, sx1 = xs[i], xs[i + 1]
+                sy0, sy1 = ys[j], ys[j + 1]
+                if (sx1 - sx0) < 1.0 or (sy1 - sy0) < 1.0:
+                    continue
+                if (sx1 - sx0) * (sy1 - sy0) < min_room_m2:
+                    continue
+                sub.append((sx0, sy0, sx1, sy1))
+        if len(sub) < 2:
+            out.append(r)
+            continue
+        # Cap splits per mega room; prefer smaller wall-aligned cells
+        sub = sorted(sub, key=_area_box)[:5]
+        for sb in sub:
+            sx0, sy0, sx1, sy1 = sb
+            verts = [
+                _vec(sx0, sy0),
+                _vec(sx1, sy0),
+                _vec(sx1, sy1),
+                _vec(sx0, sy1),
+            ]
+            out.append(
+                {
+                    "id": f"room-split-{len(out)+1}",
+                    "type": str(r.get("type") or "房間"),
+                    "vertices": verts,
+                    "confidence": min(0.68, float(r.get("confidence") or 0.55) + 0.06),
+                    "_split": True,
+                }
+            )
+        n_split += 1
+    if not n_split:
+        return rooms, notes
+    # Prefer split children over leftover overlapping mega parents
+    split_rooms = [r for r in out if r.get("_split")]
+    plain = [r for r in out if not r.get("_split")]
+    final: list[dict[str, Any]] = []
+    # Keep all split children first (small → large)
+    for r in sorted(split_rooms, key=lambda rr: _area_box(_room_aabb(rr) or (0, 0, 0, 0))):
+        box = _room_aabb(r)
+        if not box:
+            continue
+        a = _area_box(box)
+        keep = True
+        for k in final:
+            kb = _room_aabb(k)
+            if not kb:
+                continue
+            ix0 = max(box[0], kb[0]); iy0 = max(box[1], kb[1])
+            ix1 = min(box[2], kb[2]); iy1 = min(box[3], kb[3])
+            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+            # Only drop near-duplicate splits
+            if inter / max(a, 1e-6) >= 0.80:
+                keep = False
+                break
+        if keep:
+            final.append(r)
+    # Add plain rooms that are not mostly covered by a split child
+    for r in plain:
+        box = _room_aabb(r)
+        if not box:
+            continue
+        a = _area_box(box)
+        covered = 0.0
+        for k in final:
+            kb = _room_aabb(k)
+            if not kb:
+                continue
+            ix0 = max(box[0], kb[0]); iy0 = max(box[1], kb[1])
+            ix1 = min(box[2], kb[2]); iy1 = min(box[3], kb[3])
+            covered += max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+        if covered / max(a, 1e-6) >= 0.50:
+            continue  # superseded by splits
+        # Only drop huge leftover open-plan that overlaps any split
+        if a >= 28.0 and split_rooms and covered / max(a, 1e-6) >= 0.20:
+            continue
+        final.append(r)
+    if len(final) > 10:
+        # Prefer smaller/medium rooms (beds/baths) then largest living
+        final = sorted(final, key=lambda rr: _area_box(_room_aabb(rr) or (0, 0, 0, 0)))
+        # keep up to 8 small+medium, then 2 largest
+        small = [r for r in final if _area_box(_room_aabb(r) or (0, 0, 0, 0)) < 18.0][:8]
+        big = [r for r in reversed(final) if _area_box(_room_aabb(r) or (0, 0, 0, 0)) >= 18.0][:2]
+        final = small + big
+        final = final[:10]
+    for i, r in enumerate(final):
+        r.pop("_split", None)
+        r["id"] = f"room-{i+1}"
+    notes.append(
+        f"以穿越牆切開大 AABB 房間 {n_split} 個→共 {len(final)} 房（臥／衛分間）。"
+    )
+    return final, notes
+
+
+def _rooms_from_wall_barriers(
+    walls: list[dict[str, Any]],
+    *,
+    mpp: float,
+    height_px: int,
+    max_rooms: int = 10,
+    min_area_m2: float = 2.2,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Finer wall-constrained rooms from free-space cells (not one big AABB).
+
+    Rasterize wall barriers, take free CCs, emit ortho polygons. Prefer modest
+    enclosed cells (bedrooms/baths) over a single open-plan mega-blob.
+    """
+    notes: list[str] = []
+    if not walls or mpp <= 0:
+        return [], notes
+    xs: list[float] = []
+    ys: list[float] = []
+    for w in walls:
+        xs.extend([w["a"]["x"], w["b"]["x"]])
+        ys.extend([w["a"]["y"], w["b"]["y"]])
+    if not xs:
+        return [], notes
+    pad = 0.35
+    min_x, max_x = min(xs) - pad, max(xs) + pad
+    min_y, max_y = min(ys) - pad, max(ys) + pad
+    rw = max(32, int(round((max_x - min_x) / mpp)))
+    rh = max(32, int(round((max_y - min_y) / mpp)))
+    if rw * rh > 4_000_000:
+        return [], notes
+    barrier = np.zeros((rh, rw), np.uint8)
+    thick = max(2, int(round(0.14 / mpp)))
+
+    def _m_to_r(x: float, y: float) -> tuple[int, int]:
+        px = int(round((x - min_x) / mpp))
+        py = int(round((max_y - y) / mpp))
+        return px, py
+
+    for w in walls:
+        p1 = _m_to_r(w["a"]["x"], w["a"]["y"])
+        p2 = _m_to_r(w["b"]["x"], w["b"]["y"])
+        cv2.line(barrier, p1, p2, 255, thick)
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    barrier = cv2.dilate(barrier, k3, iterations=1)
+    # Seal outer frame so exterior doesn't flood into rooms
+    cv2.rectangle(barrier, (0, 0), (rw - 1, rh - 1), 255, max(2, thick))
+    free = cv2.bitwise_not(barrier)
+    free = cv2.morphologyEx(free, cv2.MORPH_OPEN, k3, iterations=1)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(free, connectivity=4)
+    if n <= 2:
+        return [], notes
+    cands: list[tuple[float, int]] = []
+    floor_area = max(1.0, (max_x - min_x) * (max_y - min_y))
+    for i in range(1, n):
+        area_px = int(st[i, cv2.CC_STAT_AREA])
+        area_m2 = area_px * mpp * mpp
+        if area_m2 < min_area_m2:
+            continue
+        # Skip near-full-floor open flood (failed barrier)
+        if area_m2 > floor_area * 0.72:
+            continue
+        ww = int(st[i, cv2.CC_STAT_WIDTH])
+        hh = int(st[i, cv2.CC_STAT_HEIGHT])
+        aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+        if aspect >= 6.0 and min(ww, hh) * mpp < 1.2:
+            continue  # thin corridor strip chrome
+        cands.append((area_m2, i))
+    cands.sort(reverse=True)
+    # Prefer mix: keep smaller enclosed rooms, don't only keep mega living
+    selected: list[int] = []
+    # First pass: rooms under ~18 m² (beds/baths/studies)
+    for area_m2, i in cands:
+        if len(selected) >= max_rooms:
+            break
+        if area_m2 <= 18.0:
+            selected.append(i)
+    # Second: larger living / open cells if budget remains
+    for area_m2, i in cands:
+        if len(selected) >= max_rooms:
+            break
+        if i not in selected:
+            selected.append(i)
+    rooms: list[dict[str, Any]] = []
+    for i in selected:
+        mask = (lab == i).astype(np.uint8) * 255
+        poly = _ortho_polygon_from_mask(mask, max_verts=12)
+        if poly is None or len(poly) < 4:
+            continue
+        verts = []
+        for x, y in poly:
+            mx = min_x + float(x) * mpp
+            my = max_y - float(y) * mpp
+            verts.append(_vec(mx, my))
+        # Reject degenerate
+        xs2 = [v["x"] for v in verts]
+        ys2 = [v["y"] for v in verts]
+        if (max(xs2) - min(xs2)) * (max(ys2) - min(ys2)) < min_area_m2:
+            continue
+        rooms.append(
+            {
+                "id": f"room-wall-{len(rooms)+1}",
+                "type": "房間",
+                "vertices": verts,
+                "confidence": 0.62,
+            }
+        )
+    if rooms:
+        notes.append(
+            f"牆屏障自由格房間 {len(rooms)}（貼齊牆網；避免單一開放廳 AABB）。"
+        )
+    return rooms, notes
+
+
+def _prefer_finer_rooms(
+    existing: list[dict[str, Any]],
+    barrier_rooms: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Prefer wall-barrier rooms when they split mega CubiCasa/AABB blobs."""
+    notes: list[str] = []
+    if not barrier_rooms:
+        return existing, notes
+    if not existing:
+        return barrier_rooms, notes
+
+    def _area(r: dict[str, Any]) -> float:
+        box = _room_aabb(r)
+        if not box:
+            return 0.0
+        return max(0.0, (box[2] - box[0]) * (box[3] - box[1]))
+
+    ex_areas = sorted((_area(r) for r in existing), reverse=True)
+    br_areas = sorted((_area(r) for r in barrier_rooms), reverse=True)
+    mega_ex = sum(1 for a in ex_areas if a >= 20.0)
+    mega_br = sum(1 for a in br_areas if a >= 20.0)
+    # Reject barrier set if it under-segments into a few mega floods
+    if len(barrier_rooms) <= 3 and mega_br >= max(1, len(barrier_rooms) - 1):
+        notes.append(
+            f"牆屏障房間過粗（{len(barrier_rooms)} mega），保留既有 {len(existing)}。"
+        )
+        return existing, notes
+    # Barrier wins when finer split of mega AABBs
+    if len(barrier_rooms) >= 5 and (
+        (mega_ex >= 2 and mega_br < mega_ex)
+        or (ex_areas and ex_areas[0] >= 28.0 and br_areas and br_areas[0] < ex_areas[0] * 0.75)
+        or (len(barrier_rooms) >= len(existing) + 1 and mega_br <= mega_ex)
+    ):
+        notes.append(
+            f"房間改採牆約束分割 {len(existing)}→{len(barrier_rooms)}"
+            f"（拆大開放 AABB／臥衛分間）。"
+        )
+        return barrier_rooms, notes
+    # Hybrid: start from existing, replace mega with barrier cells that overlap them
+    out: list[dict[str, Any]] = []
+    used_br: set[int] = set()
+    for r in existing:
+        ar = _area(r)
+        box = _room_aabb(r)
+        if not box:
+            continue
+        if ar < 18.0:
+            out.append(dict(r))
+            continue
+        # Mega AABB: try to replace with overlapping barrier rooms
+        replacements = []
+        for bi, b in enumerate(barrier_rooms):
+            if bi in used_br:
+                continue
+            bb = _room_aabb(b)
+            if not bb:
+                continue
+            ix0 = max(box[0], bb[0]); iy0 = max(box[1], bb[1])
+            ix1 = min(box[2], bb[2]); iy1 = min(box[3], bb[3])
+            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+            if inter >= 0.35 * _area(b) and _area(b) < ar * 0.85:
+                replacements.append((bi, b))
+        if len(replacements) >= 2:
+            for bi, b in replacements:
+                used_br.add(bi)
+                out.append(dict(b))
+        else:
+            out.append(dict(r))
+    # Add unused small barrier rooms not covered
+    for bi, b in enumerate(barrier_rooms):
+        if bi in used_br or _area(b) >= 18.0:
+            continue
+        bb = _room_aabb(b)
+        if not bb:
+            continue
+        cx, cy = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+        if any(
+            (ab := _room_aabb(r)) and ab[0] <= cx <= ab[2] and ab[1] <= cy <= ab[3]
+            for r in out
+        ):
+            continue
+        out.append(dict(b))
+    if len(out) > 10:
+        out = sorted(out, key=_area, reverse=True)[:10]
+    for i, r in enumerate(out):
+        r["id"] = f"room-{i+1}"
+    if len(out) != len(existing) or mega_ex >= 2:
+        notes.append(
+            f"房間牆約束微調：{len(existing)}→{len(out)}（拆 mega／補小房）。"
+        )
+        return out, notes
+    return existing, notes
+
+
 def _constrain_rooms_by_walls(
     rooms: list[dict[str, Any]],
     walls: list[dict[str, Any]],
@@ -3431,7 +3961,7 @@ def _constrain_rooms_by_walls(
     if rw * rh > 4_000_000:
         return rooms, notes
     barrier = np.zeros((rh, rw), np.uint8)
-    thick = max(2, int(round(0.12 / mpp)))
+    thick = max(2, int(round(0.08 / mpp)))
 
     def _m_to_r(x: float, y: float) -> tuple[int, int]:
         px = int(round((x - min_x) / mpp))
@@ -3443,8 +3973,7 @@ def _constrain_rooms_by_walls(
         p1 = _m_to_r(w["a"]["x"], w["a"]["y"])
         p2 = _m_to_r(w["b"]["x"], w["b"]["y"])
         cv2.line(barrier, p1, p2, 255, thick)
-    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    barrier = cv2.dilate(barrier, k3, iterations=1)
+    # No extra dilate — thick walls already seal; dilate was over-shrinking CAD rooms
     free = cv2.bitwise_not(barrier)
     if content_roi is not None:
         # optional: zero outside ROI in raster — skip for simplicity
@@ -3484,9 +4013,9 @@ def _constrain_rooms_by_walls(
             out.append(r)
             continue
         mask = (lab == label).astype(np.uint8) * 255
-        # Clip mask to expanded room AABB to avoid swallowing whole floor
+        # Clip mask to lightly expanded room AABB (avoid re-inflating splits)
         x0, y0, x1, y1 = box
-        exp = 0.55
+        exp = 0.22
         rx0, ry0 = _m_to_r(x0 - exp, y1 + exp)
         rx1, ry1 = _m_to_r(x1 + exp, y0 - exp)
         rx0, rx1 = max(0, min(rx0, rx1)), min(rw, max(rx0, rx1))
@@ -3506,6 +4035,15 @@ def _constrain_rooms_by_walls(
             mx = min_x + float(x) * mpp
             my = max_y - float(y) * mpp
             verts.append(_vec(mx, my))
+        # Reject clip that inflates past original AABB or collapses too hard
+        ox0, oy0, ox1, oy1 = box
+        o_area = max(1e-6, (ox1 - ox0) * (oy1 - oy0))
+        nxs = [v["x"] for v in verts]
+        nys = [v["y"] for v in verts]
+        n_area = max(0.0, (max(nxs) - min(nxs)) * (max(nys) - min(nys)))
+        if n_area > o_area * 1.20 or n_area < o_area * 0.65:
+            out.append(r)
+            continue
         nr = dict(r)
         nr["vertices"] = verts
         nr["confidence"] = min(0.72, float(r.get("confidence") or 0.55) + 0.08)
@@ -3836,11 +4374,41 @@ def run_yolo_detect(
         notes.append(
             f"最終重申外周界 ring {len(ring2)} 段（{'閉合' if ring2_closed else '未閉合'}）。"
         )
+    # Drop furniture-risk interior ink (esp. marketing 2b ΣL inflation)
+    max_int = 16 if plan_style == "marketing" else 20
+    walls, furn_notes = _filter_furniture_risk_walls(
+        walls, plan_style=plan_style, max_interior=max_int
+    )
+    notes.extend(furn_notes)
+    # Drop zero-length / tiny stubs (never drop multi-segment ring identity bulk)
+    walls = [
+        w for w in walls
+        if "ring" in str(w.get("id", "")) or _seg_length_m(w) >= 0.70
+    ]
+    walls = [w for w in walls if _seg_length_m(w) >= 0.40]
+    # Split mega open-plan AABBs along crossing interior walls (beds/baths)
+    rooms, split_notes = _split_aabb_rooms_by_walls(
+        rooms, walls, min_room_m2=2.5, mega_m2=14.0
+    )
+    notes.extend(split_notes)
     # Wall-constrained room polygons (after structural walls settle)
     rooms, room_wall_notes = _constrain_rooms_by_walls(
         rooms, walls, mpp=mpp, height_px=h, content_roi=(x0, y0, x1, y1)
     )
     notes.extend(room_wall_notes)
+    # Finer rooms from wall free-space cells (when barriers close)
+    barrier_rooms, br_notes = _rooms_from_wall_barriers(
+        walls, mpp=mpp, height_px=h, max_rooms=10, min_area_m2=2.0
+    )
+    notes.extend(br_notes)
+    rooms, pref_notes = _prefer_finer_rooms(rooms, barrier_rooms)
+    notes.extend(pref_notes)
+    # Re-clip after preference
+    if split_notes or pref_notes or br_notes:
+        rooms, room_wall_notes2 = _constrain_rooms_by_walls(
+            rooms, walls, mpp=mpp, height_px=h, content_roi=(x0, y0, x1, y1)
+        )
+        notes.extend(room_wall_notes2)
     # Coverage-first cap: keep long near-axis structural walls (was 22; too aggressive)
     if len(walls) > 42:
         ring_keep = [w for w in walls if "ring" in str(w.get("id", ""))]
@@ -4006,13 +4574,18 @@ def run_yolo_detect(
             f"窗 snap {n_snap_w}/drop {n_drop_w}。"
         )
 
-    # Flush openings onto perimeter / ring walls (align glyph to outer ink)
-    doors, n_flush_d = _flush_openings_to_perimeter_walls(doors, walls, max_dist_m=0.80)
+    # Flush openings onto perimeter / ring walls (real windows/doors on ring)
+    doors, n_flush_d = _flush_openings_to_perimeter_walls(
+        doors, walls, max_dist_m=0.80, ring_only=False, min_len_m=0.50
+    )
+    # Windows: ring-only flush — no fake peri / no interior ink attachment
     windows, n_flush_w = _flush_openings_to_perimeter_walls(
-        windows, walls, max_dist_m=0.90
+        windows, walls, max_dist_m=0.95, ring_only=True, min_len_m=0.55
     )
     if n_flush_d or n_flush_w:
-        notes.append(f"開口 flush 外周界：門 {n_flush_d}、窗 {n_flush_w}。")
+        notes.append(
+            f"開口 flush 外周界：門 {n_flush_d}、窗 {n_flush_w}（窗僅 ring）。"
+        )
 
     # FORBIDDEN: heuristic perimeter windows (even when model wins exist).
     # Only model detections (YOLO / CubiCasa) and snapped gap openings remain.
