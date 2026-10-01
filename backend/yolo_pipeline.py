@@ -856,6 +856,10 @@ def _plan_style_from_bgr(
     # Desaturated marketing line-art: thin near-black strokes dominate mid fills
     if near_black >= 0.008 and near_black >= mid_gray * 0.25:
         return "marketing"
+    # Furniture-heavy desaturated marketing: mid-gray fills (rugs/mats) inflate
+    # mid_gray, but structural walls are still near-black strokes.
+    if near_black >= 0.012:
+        return "marketing"
     return "cad"
 
 
@@ -950,13 +954,14 @@ def _structural_walls_from_ink(
     x1: int,
     y1: int,
     foot: np.ndarray,
-    max_add: int = 28,
+    max_add: int = 40,
     plan_style: str = "cad",
 ) -> tuple[list[dict[str, Any]], np.ndarray]:
-    """Long near-axis walls from dark ink / CAD wall fills.
+    """Long near-axis walls from thick fill + stroke ink (hand-traced skeleton).
 
-    Returns (walls, ink_mask) so callers can require ink support later.
-    Prefer thick structural ink; suppress compact furniture/decor blobs harder.
+    Returns (walls, ink_mask). Priority: perimeter + major partitions overlapping
+    real wall ink; suppress compact furniture/decor. Merges fill + stroke paths
+    then extracts via H/V morphological CCs + Hough (door-sized gaps).
     """
     h, w = bgr.shape[:2]
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -967,36 +972,201 @@ def _structural_walls_from_ink(
     k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
     if marketing:
-        # Near-black structural strokes on marketing / line-art plans
-        dark = (blur < 72).astype(np.uint8) * 255
-    else:
-        # CAD wall fills: mid-gray solid bands, low saturation
-        dark = ((blur > 25) & (blur < 165) & (sat < 60)).astype(np.uint8) * 255
-    dark = cv2.bitwise_and(dark, foot)
-    dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, k3, iterations=1)
-    dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k3, iterations=2)
-
-    # Prefer thick ink on marketing (furniture lines thin). CAD fills already solid.
-    if marketing:
+        # Near-black strokes. Extract H/V line masses FIRST so furniture mats
+        # (compact solids) fail the long-kernel open, while wall networks survive.
+        dark = (blur < 78).astype(np.uint8) * 255
+        dark = cv2.bitwise_and(dark, foot)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k3, iterations=2)
         dist = cv2.distanceTransform(dark, cv2.DIST_L2, 5)
-        thick = ((dist >= 1.0) & (dark > 0)).astype(np.uint8) * 255
-        if cv2.countNonZero(thick) >= 80:
-            dark = thick
+        thick_core = ((dist >= 1.0) & (dark > 0)).astype(np.uint8) * 255
+        min_dim0 = min(h, w)
+        hw0 = max(17, int(min_dim0 * 0.024)) | 1
+        kh0 = cv2.getStructuringElement(cv2.MORPH_RECT, (hw0, 1))
+        kv0 = cv2.getStructuringElement(cv2.MORPH_RECT, (1, hw0))
+        hv_lines = cv2.bitwise_or(
+            cv2.morphologyEx(dark, cv2.MORPH_OPEN, kh0),
+            cv2.morphologyEx(dark, cv2.MORPH_OPEN, kv0),
+        )
+        # Also keep thick cores that are elongated (corner columns / thick walls)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(thick_core, connectivity=8)
+        cores = np.zeros_like(thick_core)
+        for i in range(1, n):
+            area = int(st[i, cv2.CC_STAT_AREA])
+            ww = int(st[i, cv2.CC_STAT_WIDTH])
+            hh = int(st[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            solidity = area / max(ww * hh, 1)
+            # Only drop clearly rectangular furniture mats (compact + solid)
+            if area >= 500 and aspect < 2.2 and solidity > 0.55:
+                continue
+            if area >= 40 and (aspect >= 1.5 or area >= 200):
+                cores[lab == i] = 255
+        ink = cv2.bitwise_or(hv_lines, cores)
+        # Stroke path: Canny ∩ near-dark for thin perimeter
+        edges = cv2.Canny(blur, 40, 120)
+        darkish = cv2.dilate((blur < 95).astype(np.uint8) * 255, k3, iterations=1)
+        stroke = cv2.bitwise_and(cv2.bitwise_and(edges, darkish), foot)
+        n2, lab2, st2, _ = cv2.connectedComponentsWithStats(stroke, connectivity=8)
+        for i in range(1, n2):
+            area = int(st2[i, cv2.CC_STAT_AREA])
+            ww = int(st2[i, cv2.CC_STAT_WIDTH])
+            hh = int(st2[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            if area >= 20 and aspect >= 3.0 and max(ww, hh) >= 24:
+                ink[lab2 == i] = 255
+    else:
+        # CAD wall fills: mid-gray solid bands (do NOT over-filter — missing
+        # perimeter was from too-strict variance/thickness cuts).
+        dark = ((blur > 25) & (blur < 170) & (sat < 65)).astype(np.uint8) * 255
+        dark = cv2.bitwise_and(dark, foot)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, k3, iterations=1)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k3, iterations=2)
+        # Soft thickness prefer, but keep elongated thin fills too
+        dist = cv2.distanceTransform(dark, cv2.DIST_L2, 5)
+        thick = ((dist >= 0.9) & (dark > 0)).astype(np.uint8) * 255
+        n, lab, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+        ink = np.zeros_like(dark)
+        for i in range(1, n):
+            area = int(st[i, cv2.CC_STAT_AREA])
+            ww = int(st[i, cv2.CC_STAT_WIDTH])
+            hh = int(st[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            mean_t = float(dist[lab == i].mean()) if area else 0.0
+            # Prefer thick OR elongated; drop tiny compact noise
+            if area >= 40 and aspect >= 1.5:
+                ink[lab == i] = 255
+            elif area >= 180 and mean_t >= 1.0:
+                ink[lab == i] = 255
+        ink = cv2.bitwise_or(ink, thick)
+        # Adaptive strokes for double-line partitions
+        thr = cv2.adaptiveThreshold(
+            blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 35, 8
+        )
+        thr = cv2.bitwise_and(thr, foot)
+        n2, lab2, st2, _ = cv2.connectedComponentsWithStats(thr, connectivity=8)
+        for i in range(1, n2):
+            area = int(st2[i, cv2.CC_STAT_AREA])
+            ww = int(st2[i, cv2.CC_STAT_WIDTH])
+            hh = int(st2[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            if area >= 40 and aspect >= 3.2 and max(ww, hh) >= 36:
+                ink[lab2 == i] = 255
 
-    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
-    ink = np.zeros_like(dark)
-    min_area = 35 if marketing else 70
-    for i in range(1, n):
-        area = int(st[i, cv2.CC_STAT_AREA])
-        ww = int(st[i, cv2.CC_STAT_WIDTH])
-        hh = int(st[i, cv2.CC_STAT_HEIGHT])
-        aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
-        # Harder furniture suppress: compact blobs need much larger area
-        compact_ok = area >= (900 if marketing else 700)
-        if area >= min_area and (aspect >= 1.8 or compact_ok):
-            ink[lab == i] = 255
+    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k3, iterations=2)
 
-    # Skeleton → Hough for centerlines of thick CAD fills / dark strokes
+    # H/V morphological separation → CC centerlines (long perimeter / partitions)
+    min_dim = min(max(x1 - x0, 1), max(y1 - y0, 1))
+    hw = max(15, int(min_dim * 0.022)) | 1
+    t = 1 if marketing else 3
+    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (hw, t))
+    kv = cv2.getStructuringElement(cv2.MORPH_RECT, (t, hw))
+    ink_d = cv2.dilate(ink, k3, iterations=1)
+    horiz = cv2.morphologyEx(ink_d, cv2.MORPH_OPEN, kh)
+    vert = cv2.morphologyEx(ink_d, cv2.MORPH_OPEN, kv)
+    if not marketing:
+        kh2 = cv2.getStructuringElement(cv2.MORPH_RECT, (hw, 5))
+        kv2 = cv2.getStructuringElement(cv2.MORPH_RECT, (5, hw))
+        horiz = cv2.bitwise_or(horiz, cv2.morphologyEx(ink_d, cv2.MORPH_OPEN, kh2))
+        vert = cv2.bitwise_or(vert, cv2.morphologyEx(ink_d, cv2.MORPH_OPEN, kv2))
+
+    def _cc_runs(mask: np.ndarray, orient: str, prefix: str) -> list[dict[str, Any]]:
+        roi = mask[y0:y1, x0:x1]
+        if roi.size == 0:
+            return []
+        nlab, labels, stats, _ = cv2.connectedComponentsWithStats(roi, connectivity=8)
+        out: list[dict[str, Any]] = []
+        min_run = max(26, int(min(roi.shape) * 0.048))
+        gap_tol = max(14, int(min(roi.shape) * 0.028))
+        for i in range(1, nlab):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < min_run * 2:
+                continue
+            ys, xs = np.where(labels == i)
+            if xs.size == 0:
+                continue
+            if orient == "h":
+                cy = int(np.median(ys))
+                band = np.zeros(roi.shape[1], dtype=bool)
+                for yb in range(max(0, cy - 3), min(roi.shape[0], cy + 4)):
+                    band |= labels[yb, :] == i
+                j = 0
+                rw = roi.shape[1]
+                while j < rw:
+                    if band[j]:
+                        k = j
+                        gap = 0
+                        while k < rw:
+                            if band[k]:
+                                gap = 0
+                                k += 1
+                            elif gap < gap_tol:
+                                gap += 1
+                                k += 1
+                            else:
+                                break
+                        end = k - gap
+                        if end - j >= min_run:
+                            a = _px_to_m(float(x0 + j), float(y0 + cy), height_px=h, mpp=mpp)
+                            b = _px_to_m(float(x0 + end), float(y0 + cy), height_px=h, mpp=mpp)
+                            if _is_structural_edge(a[0], a[1], b[0], b[1], min_len=0.7):
+                                out.append(
+                                    {
+                                        "id": f"{prefix}-h{len(out)}",
+                                        "a": _vec(*a),
+                                        "b": _vec(*b),
+                                        "thicknessM": WALL_THICKNESS_M,
+                                        "thicknessAssumed": True,
+                                        "heightM": CEILING_HEIGHT_M,
+                                    }
+                                )
+                        j = k
+                    else:
+                        j += 1
+            else:
+                cx = int(np.median(xs))
+                band = np.zeros(roi.shape[0], dtype=bool)
+                for xb in range(max(0, cx - 3), min(roi.shape[1], cx + 4)):
+                    band |= labels[:, xb] == i
+                j = 0
+                rh = roi.shape[0]
+                while j < rh:
+                    if band[j]:
+                        k = j
+                        gap = 0
+                        while k < rh:
+                            if band[k]:
+                                gap = 0
+                                k += 1
+                            elif gap < gap_tol:
+                                gap += 1
+                                k += 1
+                            else:
+                                break
+                        end = k - gap
+                        if end - j >= min_run:
+                            a = _px_to_m(float(x0 + cx), float(y0 + j), height_px=h, mpp=mpp)
+                            b = _px_to_m(float(x0 + cx), float(y0 + end), height_px=h, mpp=mpp)
+                            if _is_structural_edge(a[0], a[1], b[0], b[1], min_len=0.7):
+                                out.append(
+                                    {
+                                        "id": f"{prefix}-v{len(out)}",
+                                        "a": _vec(*a),
+                                        "b": _vec(*b),
+                                        "thicknessM": WALL_THICKNESS_M,
+                                        "thicknessAssumed": True,
+                                        "heightM": CEILING_HEIGHT_M,
+                                    }
+                                )
+                        j = k
+                    else:
+                        j += 1
+        return out
+
+    walls: list[dict[str, Any]] = []
+    walls.extend(_cc_runs(horiz, "h", "w-ink"))
+    walls.extend(_cc_runs(vert, "v", "w-ink"))
+
+    # Skeleton + Hough with door-sized maxLineGap (supplement short gaps)
     skel = np.zeros_like(ink)
     element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
     img = ink.copy()
@@ -1008,68 +1178,217 @@ def _structural_walls_from_ink(
         img = eroded
         if cv2.countNonZero(img) == 0:
             break
-    # Marketing: Canny on dark strokes catches thin perimeter walls better than skel alone
+    hough_src = cv2.bitwise_or(cv2.dilate(ink, k3, iterations=1), skel)
     if marketing:
         edges = cv2.Canny(blur, 40, 120)
         edges = cv2.bitwise_and(edges, foot)
-        dark_e = cv2.bitwise_and(edges, cv2.dilate((blur < 95).astype(np.uint8) * 255, k3, iterations=1))
-        hough_src = cv2.bitwise_or(cv2.dilate(ink, k3, iterations=1), dark_e)
-    else:
-        hough_src = skel
-    min_len = max(18 if marketing else 24, int(min(x1 - x0, y1 - y0) * (0.028 if marketing else 0.038)))
+        dark_e = cv2.bitwise_and(
+            edges, cv2.dilate((blur < 95).astype(np.uint8) * 255, k3, iterations=1)
+        )
+        hough_src = cv2.bitwise_or(hough_src, dark_e)
+    min_len = max(20 if marketing else 24, int(min_dim * (0.032 if marketing else 0.038)))
     lines = cv2.HoughLinesP(
-        hough_src, 1, np.pi / 180, threshold=20 if not marketing else 24,
-        minLineLength=min_len, maxLineGap=18,
+        hough_src,
+        1,
+        np.pi / 180,
+        threshold=18 if marketing else 22,
+        minLineLength=min_len,
+        maxLineGap=40,  # bridge typical door / window gaps
     )
-    walls: list[dict[str, Any]] = []
-    if lines is None:
-        return walls, ink
-    cands: list[tuple[float, dict[str, Any]]] = []
-    for i, line in enumerate(lines.reshape(-1, 4)):
-        x1p, y1p, x2p, y2p = map(float, line)
-        if abs(x2p - x1p) < 7:
-            x2p = x1p
-        if abs(y2p - y1p) < 7:
-            y2p = y1p
-        # Reject diagonals early in px
-        if abs(x2p - x1p) >= 8 and abs(y2p - y1p) >= 8:
-            continue
-        a = _px_to_m(x1p, y1p, height_px=h, mpp=mpp)
-        b = _px_to_m(x2p, y2p, height_px=h, mpp=mpp)
-        min_L = 0.75 if marketing else 0.55
-        if not _is_structural_edge(a[0], a[1], b[0], b[1], min_len=min_L):
-            continue
-        L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-        mx = (a[0] + b[0]) / 2 / mpp
-        my_px = h - (a[1] + b[1]) / 2 / mpp
-        if not (x0 - 2 <= mx <= x1 + 2 and y0 - 2 <= my_px <= y1 + 2):
-            continue
-        cands.append(
-            (
-                L,
+    if lines is not None:
+        for i, line in enumerate(lines.reshape(-1, 4)):
+            x1p, y1p, x2p, y2p = map(float, line)
+            if abs(x2p - x1p) < 7:
+                x2p = x1p
+            if abs(y2p - y1p) < 7:
+                y2p = y1p
+            if abs(x2p - x1p) >= 8 and abs(y2p - y1p) >= 8:
+                continue
+            a = _px_to_m(x1p, y1p, height_px=h, mpp=mpp)
+            b = _px_to_m(x2p, y2p, height_px=h, mpp=mpp)
+            min_L = 0.75 if marketing else 0.55
+            if not _is_structural_edge(a[0], a[1], b[0], b[1], min_len=min_L):
+                continue
+            mx = (a[0] + b[0]) / 2 / mpp
+            my_px = h - (a[1] + b[1]) / 2 / mpp
+            if not (x0 - 2 <= mx <= x1 + 2 and y0 - 2 <= my_px <= y1 + 2):
+                continue
+            walls.append(
                 {
-                    "id": f"w-ink-{i}",
+                    "id": f"w-ink-hough-{i}",
                     "a": _vec(*a),
                     "b": _vec(*b),
                     "thicknessM": WALL_THICKNESS_M,
                     "thicknessAssumed": True,
                     "heightM": CEILING_HEIGHT_M,
-                },
+                }
             )
-        )
-    cands.sort(key=lambda t: t[0], reverse=True)
+
+    # Axis-projection major walls (long perimeter / partitions)
+    roi = ink[y0:y1, x0:x1]
+    if roi.size > 0:
+        rh, rw = roi.shape
+
+        def _smooth(arr: np.ndarray, k: int = 9) -> np.ndarray:
+            ker = np.ones(k, dtype=np.float64) / k
+            return np.convolve(arr.astype(np.float64), ker, mode="same")
+
+        col = _smooth(roi.sum(axis=0) / 255.0)
+        row = _smooth(roi.sum(axis=1) / 255.0)
+
+        def _peaks(arr: np.ndarray, sep: int, frac: float) -> list[int]:
+            thr = max(12.0, float(arr.max()) * frac)
+            out: list[int] = []
+            for i in range(2, len(arr) - 2):
+                if arr[i] >= thr and arr[i] >= arr[i - 1] and arr[i] >= arr[i + 1]:
+                    if out and i - out[-1] < sep:
+                        if arr[i] > arr[out[-1]]:
+                            out[-1] = i
+                    else:
+                        out.append(i)
+            return out
+
+        sep = max(12, int(min(rh, rw) * 0.022))
+        min_run = max(32, int(min(rh, rw) * 0.055))
+        gap_tol = max(16, int(min(rh, rw) * 0.03))
+        for xp in _peaks(col, sep, 0.34):
+            band = roi[:, max(0, xp - 2) : min(rw, xp + 3)].max(axis=1) > 0
+            i = 0
+            while i < rh:
+                if band[i]:
+                    j = i
+                    gap = 0
+                    while j < rh:
+                        if band[j]:
+                            gap = 0
+                            j += 1
+                        elif gap < gap_tol:
+                            gap += 1
+                            j += 1
+                        else:
+                            break
+                    end = j - gap
+                    if end - i >= min_run:
+                        a = _px_to_m(float(x0 + xp), float(y0 + i), height_px=h, mpp=mpp)
+                        b = _px_to_m(float(x0 + xp), float(y0 + end), height_px=h, mpp=mpp)
+                        if _is_structural_edge(a[0], a[1], b[0], b[1], min_len=0.95):
+                            walls.append(
+                                {
+                                    "id": f"w-ink-axv-{len(walls)}",
+                                    "a": _vec(*a),
+                                    "b": _vec(*b),
+                                    "thicknessM": WALL_THICKNESS_M,
+                                    "thicknessAssumed": True,
+                                    "heightM": CEILING_HEIGHT_M,
+                                }
+                            )
+                    i = j
+                else:
+                    i += 1
+        for yp in _peaks(row, sep, 0.34):
+            band = roi[max(0, yp - 2) : min(rh, yp + 3), :].max(axis=0) > 0
+            i = 0
+            while i < rw:
+                if band[i]:
+                    j = i
+                    gap = 0
+                    while j < rw:
+                        if band[j]:
+                            gap = 0
+                            j += 1
+                        elif gap < gap_tol:
+                            gap += 1
+                            j += 1
+                        else:
+                            break
+                    end = j - gap
+                    if end - i >= min_run:
+                        a = _px_to_m(float(x0 + i), float(y0 + yp), height_px=h, mpp=mpp)
+                        b = _px_to_m(float(x0 + end), float(y0 + yp), height_px=h, mpp=mpp)
+                        if _is_structural_edge(a[0], a[1], b[0], b[1], min_len=0.95):
+                            walls.append(
+                                {
+                                    "id": f"w-ink-axh-{len(walls)}",
+                                    "a": _vec(*a),
+                                    "b": _vec(*b),
+                                    "thicknessM": WALL_THICKNESS_M,
+                                    "thicknessAssumed": True,
+                                    "heightM": CEILING_HEIGHT_M,
+                                }
+                            )
+                    i = j
+                else:
+                    i += 1
+
+    # Ink support + reject segments sitting on thick furniture fills (marketing)
+    filtered: list[dict[str, Any]] = []
+    for wseg in walls:
+        if not _wall_has_ink_support(wseg, ink, height_px=h, mpp=mpp, min_frac=0.12):
+            continue
+        if marketing:
+            # Reject if perpendicular ink span is mat-like (very thick)
+            ax, ay = wseg["a"]["x"], wseg["a"]["y"]
+            bx, by = wseg["b"]["x"], wseg["b"]["y"]
+            ddx = (bx - ax) / mpp
+            ddy = -((by - ay) / mpp)  # image y
+            LL = (ddx * ddx + ddy * ddy) ** 0.5 or 1.0
+            nx, ny = -ddy / LL, ddx / LL
+            widths: list[int] = []
+            for t in (0.25, 0.5, 0.75):
+                sx = (ax + (bx - ax) * t) / mpp
+                sy = h - (ay + (by - ay) * t) / mpp
+                span = 0
+                for s in range(0, 26):
+                    xx, yy = int(round(sx + nx * s)), int(round(sy + ny * s))
+                    if not (0 <= xx < w and 0 <= yy < h) or ink[yy, xx] == 0:
+                        span = s
+                        break
+                else:
+                    span = 26
+                span2 = 0
+                for s in range(0, 26):
+                    xx, yy = int(round(sx - nx * s)), int(round(sy - ny * s))
+                    if not (0 <= xx < w and 0 <= yy < h) or ink[yy, xx] == 0:
+                        span2 = s
+                        break
+                else:
+                    span2 = 26
+                widths.append(span + span2)
+            if widths and float(np.median(widths)) > 22:
+                continue
+        filtered.append(wseg)
+    walls = filtered
+
+    # Prefer longer near-axis; soft dedupe by collinear midpoint
+    walls = sorted(walls, key=_seg_length_m, reverse=True)
     kept: list[dict[str, Any]] = []
-    for L, wseg in cands:
+    for wseg in walls:
         mx = (wseg["a"]["x"] + wseg["b"]["x"]) / 2
         my = (wseg["a"]["y"] + wseg["b"]["y"]) / 2
-        if any(
-            ((k["a"]["x"] + k["b"]["x"]) / 2 - mx) ** 2
-            + ((k["a"]["y"] + k["b"]["y"]) / 2 - my) ** 2
-            < 0.22 ** 2
-            for k in kept
-        ):
-            continue
-        kept.append(wseg)
+        wh = abs(wseg["a"]["y"] - wseg["b"]["y"]) < 0.25
+        dup = False
+        for kseg in kept:
+            kh = abs(kseg["a"]["y"] - kseg["b"]["y"]) < 0.25
+            if wh != kh:
+                continue
+            kx = (kseg["a"]["x"] + kseg["b"]["x"]) / 2
+            ky = (kseg["a"]["y"] + kseg["b"]["y"]) / 2
+            if wh:
+                if abs(my - ky) < 0.28:
+                    wt0, wt1 = sorted([wseg["a"]["x"], wseg["b"]["x"]])
+                    kt0, kt1 = sorted([kseg["a"]["x"], kseg["b"]["x"]])
+                    if min(wt1, kt1) - max(wt0, kt0) > -0.35:
+                        dup = True
+                        break
+            else:
+                if abs(mx - kx) < 0.28:
+                    wt0, wt1 = sorted([wseg["a"]["y"], wseg["b"]["y"]])
+                    kt0, kt1 = sorted([kseg["a"]["y"], kseg["b"]["y"]])
+                    if min(wt1, kt1) - max(wt0, kt0) > -0.35:
+                        dup = True
+                        break
+        if not dup:
+            kept.append(wseg)
         if len(kept) >= max_add:
             break
     return kept, ink
@@ -1419,7 +1738,7 @@ def _opencv_rooms_and_walls(
     # Primary walls: structural dark-ink Hough (straighter than room edges)
     walls, ink_struct = _structural_walls_from_ink(
         bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot,
-        max_add=28, plan_style=plan_style,
+        max_add=40, plan_style=plan_style,
     )
     # Prefer structural ink for support tests / barriers when richer
     if int(ink_struct.sum() // 255) > int(ink.sum() // 255):
@@ -1567,10 +1886,11 @@ def _opencv_rooms_and_walls(
         kept_ink = [
             w
             for w in walls
-            if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.12)
+            if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.08)
+            or str(w.get("id", "")).startswith(("w-ink", "w-skel", "w-m-"))
         ]
         # CAD: if ink-only is too sparse, keep long near-axis room/skel edges
-        if len(kept_ink) < 8:
+        if len(kept_ink) < 10:
             extras = [
                 w
                 for w in walls
@@ -1594,15 +1914,17 @@ def _opencv_rooms_and_walls(
     if before - len(walls):
         notes.append(f"剔除無墨跡支撐的偽牆 {before - len(walls)} 條。")
 
-    walls, merge_notes = _merge_collinear_walls(walls, min_len_m=0.75)
+    walls, merge_notes = _merge_collinear_walls(
+        walls, min_len_m=0.70, gap_tol_m=0.85, axis_tol_m=0.18
+    )
     notes.extend(merge_notes)
 
     # Stricter transect filter — drop walls cutting open floor
     walls, tx_notes = _filter_transecting_walls(walls, rooms, max_ratio=0.28)
     notes.extend(tx_notes)
 
-    # Prefer structural / long / axis-aligned when capping
-    max_walls = 22
+    # Prefer structural / long / axis-aligned when capping (coverage > aggressive cut)
+    max_walls = 36
     if len(walls) > max_walls:
         def _wall_keep_key(wseg: dict[str, Any]) -> tuple:
             wid = str(wseg.get("id", ""))
@@ -2305,6 +2627,232 @@ def _box_to_wall_segment_m(
     )
 
 
+
+
+def _extend_perimeter_walls_along_ink(
+    walls: list[dict[str, Any]],
+    bgr: np.ndarray,
+    *,
+    mpp: float,
+    content_roi: tuple[int, int, int, int],
+    plan_style: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Grow near-exterior H/V walls along dark/CAD ink to close perimeter gaps."""
+    notes: list[str] = []
+    if not walls or mpp <= 0:
+        return walls, notes
+    h, w = bgr.shape[:2]
+    x0, y0, x1, y1 = (int(v) for v in content_roi)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    if plan_style == "marketing":
+        ink = (blur < 80).astype(np.uint8) * 255
+    else:
+        ink = ((blur > 25) & (blur < 170) & (hsv[:, :, 1] < 65)).astype(np.uint8) * 255
+    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k3, iterations=1)
+    extent = _layout_extent_m(walls, None)
+    if extent is None:
+        return walls, notes
+    min_x, min_y, max_x, max_y = extent
+    margin = 1.15
+    extended = 0
+    out: list[dict[str, Any]] = []
+    for wall in walls:
+        ax, ay = wall["a"]["x"], wall["a"]["y"]
+        bx, by = wall["b"]["x"], wall["b"]["y"]
+        mx, my = (ax + bx) / 2, (ay + by) / 2
+        near_ext = (
+            abs(mx - min_x) < margin
+            or abs(mx - max_x) < margin
+            or abs(my - min_y) < margin
+            or abs(my - max_y) < margin
+        )
+        if not near_ext:
+            out.append(wall)
+            continue
+        horiz = abs(ay - by) < 0.2
+        # Walk endpoints outward along axis while ink supports
+        def _ink_at(xm: float, ym: float) -> bool:
+            px = int(round(xm / mpp))
+            py = int(round(h - ym / mpp))
+            if not (0 <= px < w and 0 <= py < h):
+                return False
+            if ink[py, px] > 0:
+                return True
+            for dy in (-3, 0, 3):
+                for dx in (-3, 0, 3):
+                    xx, yy = px + dx, py + dy
+                    if 0 <= xx < w and 0 <= yy < h and ink[yy, xx] > 0:
+                        return True
+            return False
+
+        step = 0.08
+        max_grow = 2.8
+        ax2, ay2, bx2, by2 = ax, ay, bx, by
+        if horiz:
+            # left end
+            left, right = (ax, bx) if ax <= bx else (bx, ax)
+            yconst = (ay + by) / 2
+            g = 0.0
+            while g < max_grow and _ink_at(left - step, yconst):
+                left -= step
+                g += step
+            g = 0.0
+            while g < max_grow and _ink_at(right + step, yconst):
+                right += step
+                g += step
+            ax2, bx2, ay2, by2 = left, right, yconst, yconst
+        else:
+            bot, top = (ay, by) if ay <= by else (by, ay)
+            xconst = (ax + bx) / 2
+            g = 0.0
+            while g < max_grow and _ink_at(xconst, bot - step):
+                bot -= step
+                g += step
+            g = 0.0
+            while g < max_grow and _ink_at(xconst, top + step):
+                top += step
+                g += step
+            ax2, bx2, ay2, by2 = xconst, xconst, bot, top
+        old_L = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+        new_L = ((ax2 - bx2) ** 2 + (ay2 - by2) ** 2) ** 0.5
+        nw = dict(wall)
+        if new_L > old_L + 0.15:
+            nw["a"] = _vec(ax2, ay2)
+            nw["b"] = _vec(bx2, by2)
+            extended += 1
+        out.append(nw)
+    if extended:
+        notes.append(f"外牆段沿墨跡延伸 {extended} 條（補齊周界缺口）。")
+        out, _ = _merge_collinear_walls(out, min_len_m=0.65, gap_tol_m=0.95, axis_tol_m=0.2)
+    return out, notes
+
+
+def _constrain_rooms_by_walls(
+    rooms: list[dict[str, Any]],
+    walls: list[dict[str, Any]],
+    *,
+    mpp: float,
+    height_px: int,
+    content_roi: tuple[int, int, int, int] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Clip coarse room polygons to free-space cells bounded by wall barriers.
+
+    Builds a raster barrier from wall segments, floods free space, and for each
+    room keeps the largest free CC overlapping its centroid / AABB — yielding
+    wall-constrained ortho polygons instead of coarse AABB/watershed only.
+    """
+    notes: list[str] = []
+    if not rooms or not walls or mpp <= 0:
+        return rooms, notes
+    # Bound raster to ROI or layout extent
+    xs: list[float] = []
+    ys: list[float] = []
+    for w in walls:
+        xs.extend([w["a"]["x"], w["b"]["x"]])
+        ys.extend([w["a"]["y"], w["b"]["y"]])
+    for r in rooms:
+        for v in r.get("vertices") or []:
+            xs.append(float(v["x"]))
+            ys.append(float(v["y"]))
+    if not xs:
+        return rooms, notes
+    pad = 0.4
+    min_x, max_x = min(xs) - pad, max(xs) + pad
+    min_y, max_y = min(ys) - pad, max(ys) + pad
+    # raster size
+    rw = max(32, int(round((max_x - min_x) / mpp)))
+    rh = max(32, int(round((max_y - min_y) / mpp)))
+    if rw * rh > 4_000_000:
+        return rooms, notes
+    barrier = np.zeros((rh, rw), np.uint8)
+    thick = max(2, int(round(0.12 / mpp)))
+
+    def _m_to_r(x: float, y: float) -> tuple[int, int]:
+        px = int(round((x - min_x) / mpp))
+        # y up in metres → row down
+        py = int(round((max_y - y) / mpp))
+        return px, py
+
+    for w in walls:
+        p1 = _m_to_r(w["a"]["x"], w["a"]["y"])
+        p2 = _m_to_r(w["b"]["x"], w["b"]["y"])
+        cv2.line(barrier, p1, p2, 255, thick)
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    barrier = cv2.dilate(barrier, k3, iterations=1)
+    free = cv2.bitwise_not(barrier)
+    if content_roi is not None:
+        # optional: zero outside ROI in raster — skip for simplicity
+        pass
+    n, lab, st, _ = cv2.connectedComponentsWithStats(free, connectivity=4)
+    if n <= 2:
+        return rooms, notes
+
+    out: list[dict[str, Any]] = []
+    improved = 0
+    for r in rooms:
+        box = _room_aabb(r)
+        if not box:
+            out.append(r)
+            continue
+        cx = (box[0] + box[2]) / 2
+        cy = (box[1] + box[3]) / 2
+        px, py = _m_to_r(cx, cy)
+        label = 0
+        if 0 <= px < rw and 0 <= py < rh:
+            label = int(lab[py, px])
+        if label <= 0:
+            # search nearby free cell inside AABB
+            x0, y0, x1, y1 = box
+            best = (0, 0)
+            for yy in np.linspace(y0 + 0.1, y1 - 0.1, 5):
+                for xx in np.linspace(x0 + 0.1, x1 - 0.1, 5):
+                    qx, qy = _m_to_r(float(xx), float(yy))
+                    if 0 <= qx < rw and 0 <= qy < rh:
+                        lid = int(lab[qy, qx])
+                        if lid > 0:
+                            area = int(st[lid, cv2.CC_STAT_AREA])
+                            if area > best[0]:
+                                best = (area, lid)
+            label = best[1]
+        if label <= 0:
+            out.append(r)
+            continue
+        mask = (lab == label).astype(np.uint8) * 255
+        # Clip mask to expanded room AABB to avoid swallowing whole floor
+        x0, y0, x1, y1 = box
+        exp = 0.55
+        rx0, ry0 = _m_to_r(x0 - exp, y1 + exp)
+        rx1, ry1 = _m_to_r(x1 + exp, y0 - exp)
+        rx0, rx1 = max(0, min(rx0, rx1)), min(rw, max(rx0, rx1))
+        ry0, ry1 = max(0, min(ry0, ry1)), min(rh, max(ry0, ry1))
+        clip = np.zeros_like(mask)
+        clip[ry0:ry1, rx0:rx1] = mask[ry0:ry1, rx0:rx1]
+        if cv2.countNonZero(clip) < 40:
+            out.append(r)
+            continue
+        poly = _ortho_polygon_from_mask(clip, max_verts=12)
+        if poly is None or len(poly) < 4:
+            out.append(r)
+            continue
+        # Convert raster poly → metres
+        verts = []
+        for x, y in poly:
+            mx = min_x + float(x) * mpp
+            my = max_y - float(y) * mpp
+            verts.append(_vec(mx, my))
+        nr = dict(r)
+        nr["vertices"] = verts
+        nr["confidence"] = min(0.72, float(r.get("confidence") or 0.55) + 0.08)
+        out.append(nr)
+        improved += 1
+    if improved:
+        notes.append(f"房間多邊形以牆段屏障約束 {improved}/{len(rooms)}（ortho clip）。")
+    return out, notes
+
+
 def run_yolo_detect(
     image_bytes: bytes,
     *,
@@ -2561,15 +3109,21 @@ def run_yolo_detect(
             notes.append(f"併入 YOLO 長牆 {len(long_yolo)}。")
     if cubi and cubi.get("wall_segs"):
         cubi_walls = cubi["wall_segs"]
-        # Keep longest CubiCasa walls only — avoid furniture fragments
+        # CAD: keep more CubiCasa walls (trained on CAD). Marketing: fewer, longer only.
+        cubi_cap = 24 if plan_style == "cad" else 12
         cubi_walls = sorted(
             cubi_walls,
             key=lambda ab: ((ab[0][0] - ab[1][0]) ** 2 + (ab[0][1] - ab[1][1]) ** 2),
             reverse=True,
-        )[:16]
+        )[:cubi_cap]
+        n_cubi = 0
         for i, (a, b) in enumerate(cubi_walls):
             L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-            if L < 0.8:
+            min_L = 0.7 if plan_style == "cad" else 1.0
+            if L < min_L:
+                continue
+            # Near-axis only
+            if abs(a[0] - b[0]) >= 0.28 and abs(a[1] - b[1]) >= 0.28:
                 continue
             walls.append(
                 {
@@ -2581,11 +3135,14 @@ def run_yolo_detect(
                     "heightM": CEILING_HEIGHT_M,
                 }
             )
-        notes.append(f"併入 CubiCasa 長牆至多 16（實際 {len([1 for ab in cubi_walls if ((ab[0][0]-ab[1][0])**2+(ab[0][1]-ab[1][1])**2)**0.5>=0.8])}）。")
+            n_cubi += 1
+        notes.append(f"併入 CubiCasa 近軸長牆至多 {cubi_cap}（實際 {n_cubi}）。")
 
-    walls, merge_notes = _merge_collinear_walls(walls, min_len_m=0.7)
+    walls, merge_notes = _merge_collinear_walls(
+        walls, min_len_m=0.65, gap_tol_m=0.90, axis_tol_m=0.18
+    )
     notes.extend(merge_notes)
-    tx_ratio = 0.40 if len(walls) < 12 else 0.28
+    tx_ratio = 0.40 if len(walls) < 12 else 0.32
     walls, tx_notes = _filter_transecting_walls(walls, rooms, max_ratio=tx_ratio)
     notes.extend(tx_notes)
     # Drop remaining non-structural short diagonals
@@ -2596,8 +3153,18 @@ def run_yolo_detect(
             w["a"]["x"], w["a"]["y"], w["b"]["x"], w["b"]["y"], min_len=0.55
         )
     ]
-    # Prefer fewer correct walls — hard cap 22
-    if len(walls) > 22:
+    # Extend near-exterior wall segments along ink (close perimeter gaps)
+    walls, peri_ext_notes = _extend_perimeter_walls_along_ink(
+        walls, bgr, mpp=mpp, content_roi=(x0, y0, x1, y1), plan_style=plan_style
+    )
+    notes.extend(peri_ext_notes)
+    # Wall-constrained room polygons (after structural walls settle)
+    rooms, room_wall_notes = _constrain_rooms_by_walls(
+        rooms, walls, mpp=mpp, height_px=h, content_roi=(x0, y0, x1, y1)
+    )
+    notes.extend(room_wall_notes)
+    # Coverage-first cap: keep long near-axis structural walls (was 22; too aggressive)
+    if len(walls) > 36:
         def _wall_keep_key(w: dict[str, Any]) -> tuple:
             wid = str(w.get("id", ""))
             L = _seg_length_m(w)
@@ -2606,16 +3173,18 @@ def run_yolo_detect(
             )
             if "ink" in wid or wid.startswith("w-m-"):
                 prio = 0
-            elif "room" in wid:
+            elif "cubi" in wid:
+                prio = 0 if plan_style == "cad" else 1
+            elif "skel" in wid:
                 prio = 1
-            elif "skel" in wid or "cubi" in wid:
+            elif "room" in wid:
                 prio = 2
             else:
                 prio = 1
             return (prio, -align, -L)
 
-        walls = sorted(walls, key=_wall_keep_key)[:22]
-        notes.append("牆段過多，最終截斷至 22（優先結構／近軸長牆）。")
+        walls = sorted(walls, key=_wall_keep_key)[:36]
+        notes.append("牆段過多，最終截斷至 36（優先墨跡／近軸長牆，覆蓋優先）。")
 
     def _opening_len(op: dict[str, Any]) -> float:
         a, b = op["opening"]["a"], op["opening"]["b"]
@@ -2689,7 +3258,12 @@ def run_yolo_detect(
                 }
             )
 
-    need_gap_wins = len(windows) < 2
+    # CAD: CubiCasa windows already merged above — prefer them over heuristics
+    if plan_style == "cad" and cubi:
+        cubi_win_n = sum(1 for w in windows if str(w.get("id", "")).startswith("win-cubi"))
+        if cubi_win_n:
+            notes.append(f"CAD 優先保留 CubiCasa 窗 {cubi_win_n}（啟發式僅在不足時補）。")
+    need_gap_wins = len(windows) < (2 if plan_style == "cad" else 2)
     gap_doors, gap_wins, gap_notes = _openings_from_gaps(
         walls,
         rooms=rooms,
@@ -2710,18 +3284,21 @@ def run_yolo_detect(
     elif gap_wins:
         notes.append(f"略過缺口窗 {len(gap_wins)}（模型窗已足夠）。")
 
-    # If still few windows: exterior ink bright-seam + parallel stroke glyphs
-    if len(windows) < 2:
+    # Exterior glyphs: bright-seam + parallel strokes (CAD especially needs these
+    # when CubiCasa window count is low after geometric filter).
+    win_target = 6 if plan_style == "cad" else 4
+    if len(windows) < win_target:
         ink_wins, ink_notes = _windows_from_exterior_ink(
-            bgr, walls, rooms, mpp=mpp, plan_style=plan_style, max_add=5
+            bgr, walls, rooms, mpp=mpp, plan_style=plan_style,
+            max_add=max(2, win_target - len(windows)),
         )
         notes.extend(ink_notes)
         windows.extend(ink_wins)
-    if len(windows) < 3:
-        # footprint for stroke filter
+    if len(windows) < win_target:
         foot = _footprint_mask(bgr, x0, y0, x1, y1)
         par_wins, par_notes = _windows_from_parallel_strokes(
-            bgr, walls, rooms, mpp=mpp, foot=foot, max_add=6
+            bgr, walls, rooms, mpp=mpp, foot=foot,
+            max_add=max(3, win_target - len(windows)),
         )
         notes.extend(par_notes)
         windows.extend(par_wins)
