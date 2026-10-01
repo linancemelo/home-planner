@@ -100,31 +100,39 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-6xl gap-4 px-4 py-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="space-y-4">
-          <UploadPanel
-            samples={samples.map((item) => ({ id: item.id, title: item.title }))}
-            busy={status === "running"}
-            onFile={(file) => void onFile(file)}
-            onSample={(id) => void onSample(id)}
-            activeSample={sampleId}
-          />
-          <ResultCard
-            status={status}
-            error={error}
-            result={result}
-            comparison={comparison}
-            sampleDescription={sample?.description ?? null}
-            showBinary={showBinary}
-            showJson={showJson}
-            mode={mode}
-            onToggleBinary={() => setShowBinary((v) => !v)}
-            onToggleJson={() => setShowJson((v) => !v)}
-            onDownload={() => result && downloadPlan(result.floorplan)}
-            onEnter3D={() => setMode("3d")}
-            onExit3D={() => setMode("2d")}
-          />
-        </aside>
+      <main
+        className={`mx-auto gap-4 px-4 py-4 ${
+          mode === "3d" && result
+            ? "flex max-w-7xl flex-col"
+            : "grid max-w-6xl lg:grid-cols-[300px_minmax(0,1fr)]"
+        }`}
+      >
+        {!(mode === "3d" && result) && (
+          <aside className="space-y-4">
+            <UploadPanel
+              samples={samples.map((item) => ({ id: item.id, title: item.title }))}
+              busy={status === "running"}
+              onFile={(file) => void onFile(file)}
+              onSample={(id) => void onSample(id)}
+              activeSample={sampleId}
+            />
+            <ResultCard
+              status={status}
+              error={error}
+              result={result}
+              comparison={comparison}
+              sampleDescription={sample?.description ?? null}
+              showBinary={showBinary}
+              showJson={showJson}
+              mode={mode}
+              onToggleBinary={() => setShowBinary((v) => !v)}
+              onToggleJson={() => setShowJson((v) => !v)}
+              onDownload={() => result && downloadPlan(result.floorplan)}
+              onEnter3D={() => setMode("3d")}
+              onExit3D={() => setMode("2d")}
+            />
+          </aside>
+        )}
         <section className="min-h-[70vh]">
           {status === "running" ? (
             <div className="flex h-full min-h-[420px] items-center justify-center rounded-xl border border-[#ddd4c6] bg-[#f7f3ea] text-sm text-[#5c564e]">

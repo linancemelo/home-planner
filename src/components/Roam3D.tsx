@@ -1,8 +1,16 @@
-import { KeyboardControls, useKeyboardControls } from "@react-three/drei"
+import { KeyboardControls, OrbitControls, useKeyboardControls } from "@react-three/drei"
 import { Canvas, useFrame, useThree } from "@react-three/fiber"
-import { Component, useEffect, useMemo, useRef, type MutableRefObject, type ReactNode } from "react"
+import {
+  Component,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from "react"
 import type { Camera, Group, Mesh, Object3D } from "three"
-import { Raycaster, Vector2 } from "three"
+import { PerspectiveCamera, Raycaster, Vector2, Vector3 } from "three"
 import {
   PLAYER_RADIUS,
   buildRoom,
@@ -13,6 +21,7 @@ import {
   type SwingDoor,
 } from "../lib/scene/room.ts"
 import type { Floorplan } from "../types/floorplan.ts"
+import { FloorplanMinimap, type PlayerPose } from "./FloorplanMinimap.tsx"
 
 const KEY_MAP = [
   { name: "forward", keys: ["KeyW", "ArrowUp"] },
@@ -22,18 +31,48 @@ const KEY_MAP = [
   { name: "use", keys: ["KeyE"] },
 ]
 
+/** 第一人稱俯仰限制（約 ±18°），維持接近水平視線。 */
+const PITCH_LIMIT = 0.32
+
 type MoveState = { f: number; b: number; l: number; r: number }
 type Keys = { forward: boolean; back: boolean; left: boolean; right: boolean; use: boolean }
+export type ViewMode3D = "exhibit" | "guide" | "roam" | "compare"
 
 type Props = {
   plan: Floorplan
   onBack: () => void
 }
 
+const RAIL_PRIMARY: { id: ViewMode3D; label: string; ready: boolean }[] = [
+  { id: "exhibit", label: "展示", ready: true },
+  { id: "guide", label: "導覽", ready: false },
+  { id: "roam", label: "漫遊", ready: true },
+  { id: "compare", label: "對比", ready: false },
+]
+
+const RAIL_LIFE = ["動線", "收納", "家事", "回憶"]
+const RAIL_DESIGN = ["佈置", "格局", "風格", "日照", "量測"]
+
 export function Roam3D({ plan, onBack }: Props) {
   const model = useMemo(() => buildRoom(plan), [plan])
   const move = useRef<MoveState>({ f: 0, b: 0, l: 0, r: 0 })
   const api = useRef({ toggleAimed: () => {} })
+  const poseRef = useRef<PlayerPose>({
+    x: model.spawn.x,
+    z: model.spawn.z,
+    yaw: model.spawn.yaw,
+  })
+  const [pose, setPose] = useState<PlayerPose>(() => ({
+    x: model.spawn.x,
+    z: model.spawn.z,
+    yaw: model.spawn.yaw,
+  }))
+  const [mode, setMode] = useState<ViewMode3D>("roam")
+
+  useEffect(() => {
+    poseRef.current = { x: model.spawn.x, z: model.spawn.z, yaw: model.spawn.yaw }
+    setPose(poseRef.current)
+  }, [model])
 
   useEffect(() => {
     const block = (event: KeyboardEvent) => {
@@ -53,6 +92,17 @@ export function Roam3D({ plan, onBack }: Props) {
     return () => window.removeEventListener("keydown", block)
   }, [])
 
+  useEffect(() => {
+    if (mode !== "roam") return
+    let frame = 0
+    const id = window.setInterval(() => {
+      frame += 1
+      if (frame % 1 !== 0) return
+      setPose({ ...poseRef.current })
+    }, 80)
+    return () => window.clearInterval(id)
+  }, [mode])
+
   if (model.solids.length === 0) {
     return (
       <div className="flex h-[72vh] min-h-[420px] flex-col items-start justify-center gap-3 rounded-xl border border-[#ddd4c6] bg-[#f7f3ea] px-6">
@@ -68,52 +118,189 @@ export function Roam3D({ plan, onBack }: Props) {
     move.current[key] = value
   }
 
+  const isRoam = mode === "roam"
+
   return (
     <ViewError onBack={onBack}>
-      <div className="relative h-[72vh] min-h-[480px] overflow-hidden rounded-xl border border-[#cfc6b8] bg-[#d7d0c4]">
-        <KeyboardControls map={KEY_MAP}>
-          <Canvas
-            camera={{ fov: 72, near: 0.08, far: 120, position: [model.spawn.x, model.spawn.eye, model.spawn.z] }}
-            dpr={[1, 1.75]}
-            gl={{ antialias: true }}
-          >
-            <color attach="background" args={["#d7d0c4"]} />
-            <Scene model={model} move={move} api={api} />
-          </Canvas>
-        </KeyboardControls>
+      <div className="relative flex h-[min(82vh,860px)] min-h-[520px] overflow-hidden rounded-xl border border-[#cfc6b8] bg-[#d7d0c4]">
+        <ToolRail mode={mode} onMode={setMode} onBack={onBack} />
 
-        <div className="pointer-events-none absolute left-1/2 top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2">
-          <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-[#1c1917]/70" />
-          <div className="absolute top-1/2 left-0 h-px w-full -translate-y-1/2 bg-[#1c1917]/70" />
+        <div className="relative min-w-0 flex-1">
+          <KeyboardControls map={KEY_MAP}>
+            <Canvas
+              key={isRoam ? "roam" : "exhibit"}
+              camera={{
+                fov: isRoam ? 68 : 42,
+                near: 0.08,
+                far: 200,
+                position: isRoam
+                  ? [model.spawn.x, model.spawn.eye, model.spawn.z]
+                  : exhibitCameraPosition(model),
+              }}
+              dpr={[1, 1.75]}
+              gl={{ antialias: true }}
+            >
+              <color attach="background" args={["#d7d0c4"]} />
+              <Scene
+                model={model}
+                move={move}
+                api={api}
+                poseRef={poseRef}
+                mode={isRoam ? "roam" : "exhibit"}
+              />
+            </Canvas>
+          </KeyboardControls>
+
+          {isRoam && (
+            <div className="pointer-events-none absolute left-1/2 top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2">
+              <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-[#1c1917]/70" />
+              <div className="absolute top-1/2 left-0 h-px w-full -translate-y-1/2 bg-[#1c1917]/70" />
+            </div>
+          )}
+
+          <div className="pointer-events-none absolute top-3 left-3 max-w-[15rem] rounded-lg bg-[#1c1917]/75 px-3 py-2 text-xs leading-5 text-[#f7f3ea]">
+            {isRoam
+              ? "拖曳改變視角（不鎖指標）。WASD 移動。對準門按 E 或輕點門扇。"
+              : "俯瞰／展示：拖曳環視，滾輪縮放。左側可切到「漫遊」。"}
+          </div>
+
+          {isRoam && (
+            <div className="absolute top-3 right-3 flex gap-2 md:right-[19rem]">
+              <button
+                type="button"
+                onClick={() => api.current.toggleAimed()}
+                className="rounded-lg bg-[#1c1917]/80 px-3 py-1.5 text-sm text-[#f7f3ea]"
+              >
+                開門
+              </button>
+            </div>
+          )}
+
+          {isRoam && (
+            <div className="absolute bottom-3 left-3 grid grid-cols-3 gap-1 md:hidden">
+              <span />
+              <MoveButton label="前" onDown={() => hold("f", 1)} onUp={() => hold("f", 0)} />
+              <span />
+              <MoveButton label="左" onDown={() => hold("l", 1)} onUp={() => hold("l", 0)} />
+              <MoveButton label="後" onDown={() => hold("b", 1)} onUp={() => hold("b", 0)} />
+              <MoveButton label="右" onDown={() => hold("r", 1)} onUp={() => hold("r", 0)} />
+            </div>
+          )}
         </div>
 
-        <div className="pointer-events-none absolute top-3 left-3 max-w-[16rem] rounded-lg bg-[#1c1917]/75 px-3 py-2 text-xs leading-5 text-[#f7f3ea]">
-          拖曳改變視角，指標不會被鎖住。WASD 移動。對準門按 E，或輕點門扇。
-        </div>
-        <div className="absolute top-3 right-3 flex gap-2">
-          <button
-            type="button"
-            onClick={() => api.current.toggleAimed()}
-            className="rounded-lg bg-[#1c1917]/80 px-3 py-1.5 text-sm text-[#f7f3ea]"
-          >
-            開門
-          </button>
-          <button type="button" onClick={onBack} className="rounded-lg bg-[#f7f3ea] px-3 py-1.5 text-sm text-[#1c1917]">
-            回到 2D
-          </button>
-        </div>
-
-        <div className="absolute bottom-3 left-3 grid grid-cols-3 gap-1 md:hidden">
-          <span />
-          <MoveButton label="前" onDown={() => hold("f", 1)} onUp={() => hold("f", 0)} />
-          <span />
-          <MoveButton label="左" onDown={() => hold("l", 1)} onUp={() => hold("l", 0)} />
-          <MoveButton label="後" onDown={() => hold("b", 1)} onUp={() => hold("b", 0)} />
-          <MoveButton label="右" onDown={() => hold("r", 1)} onUp={() => hold("r", 0)} />
-        </div>
+        <aside className="pointer-events-auto absolute right-3 top-3 bottom-3 hidden w-[17.5rem] flex-col overflow-hidden rounded-2xl border border-white/70 bg-[#f7f3ea]/92 shadow-[0_12px_40px_rgba(28,25,23,0.18)] backdrop-blur-md md:flex">
+          <div className="border-b border-[#e7dfd2] px-3 py-2.5">
+            <p className="text-[10px] font-semibold tracking-[0.16em] text-[#2563eb]">
+              {isRoam ? "FIRST PERSON · 第一人稱" : "OVERVIEW · 俯瞰展示"}
+            </p>
+            <h2 className="mt-0.5 text-sm font-semibold text-[#1c1917]">
+              {isRoam ? "在家裡走一圈" : "鳥瞰全室格局"}
+            </h2>
+            <p className="mt-1 text-[11px] leading-4 text-[#6b645c]">
+              {isRoam
+                ? "小地圖與 2D 疊圖共用同一份 Floorplan 幾何。"
+                : "僅牆／門／窗／地板；家具尚未加入。"}
+            </p>
+          </div>
+          <div className="min-h-0 flex-1 px-2.5 py-2">
+            <p className="mb-1 text-[10px] font-medium text-[#8a8175]">小地圖</p>
+            <div className="h-[min(42%,280px)] min-h-[160px] overflow-hidden rounded-xl border border-[#e0d6c8] bg-[#efe8dc]">
+              <FloorplanMinimap plan={plan} player={isRoam ? pose : null} />
+            </div>
+            <div className="mt-2 space-y-1 text-[11px] text-[#5c564e]">
+              <p>
+                你在：
+                <span className="font-medium text-[#1c1917]">{isRoam ? "室內漫遊" : "俯瞰視角"}</span>
+              </p>
+              {isRoam && (
+                <p>
+                  視線高度 {Math.round(model.spawn.eye * 100)} cm
+                  <span className="text-[#8a8175]"> · 接近水平</span>
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="border-t border-[#e7dfd2] px-3 py-2">
+            <button
+              type="button"
+              onClick={onBack}
+              className="w-full rounded-lg bg-[#efe8dc] px-3 py-1.5 text-sm text-[#1c1917] hover:bg-[#e7dfd2]"
+            >
+              回到 2D 辨識
+            </button>
+          </div>
+        </aside>
       </div>
     </ViewError>
   )
+}
+
+function ToolRail({
+  mode,
+  onMode,
+  onBack,
+}: {
+  mode: ViewMode3D
+  onMode: (mode: ViewMode3D) => void
+  onBack: () => void
+}) {
+  return (
+    <nav className="z-10 flex w-[3.6rem] shrink-0 flex-col items-center gap-1 border-r border-[#cfc6b8]/80 bg-[#f7f3ea]/95 py-2 backdrop-blur-sm md:w-16">
+      <button
+        type="button"
+        onClick={onBack}
+        className="mb-1 rounded-lg px-1.5 py-1 text-[10px] text-[#6b645c] hover:bg-[#efe8dc]"
+        title="回到 2D"
+      >
+        2D
+      </button>
+      {RAIL_PRIMARY.map((item) => {
+        const on = mode === item.id
+        return (
+          <button
+            key={item.id}
+            type="button"
+            disabled={!item.ready}
+            onClick={() => item.ready && onMode(item.id)}
+            className={`w-[3.1rem] rounded-lg px-1 py-2 text-xs leading-4 md:w-[3.4rem] ${
+              on
+                ? "bg-[#1c1917] font-medium text-[#f7f3ea]"
+                : item.ready
+                  ? "text-[#3f3a34] hover:bg-[#efe8dc]"
+                  : "cursor-not-allowed text-[#b0a89c]"
+            }`}
+            title={item.ready ? item.label : `${item.label}（尚未開放）`}
+          >
+            {item.label}
+          </button>
+        )
+      })}
+      <div className="my-1 h-px w-8 bg-[#ddd4c6]" />
+      <p className="text-[9px] tracking-wider text-[#b0a89c]">生活</p>
+      {RAIL_LIFE.map((label) => (
+        <span key={label} className="w-full px-0.5 text-center text-[10px] leading-4 text-[#c4bbb0]">
+          {label}
+        </span>
+      ))}
+      <div className="my-1 h-px w-8 bg-[#ddd4c6]" />
+      <p className="text-[9px] tracking-wider text-[#b0a89c]">設計</p>
+      {RAIL_DESIGN.map((label) => (
+        <span key={label} className="w-full px-0.5 text-center text-[10px] leading-4 text-[#c4bbb0]">
+          {label}
+        </span>
+      ))}
+    </nav>
+  )
+}
+
+function exhibitCameraPosition(model: RoomModel): [number, number, number] {
+  const { minX, maxX, minZ, maxZ } = model.bounds
+  const cx = (minX + maxX) / 2
+  const cz = (minZ + maxZ) / 2
+  const span = Math.max(maxX - minX, maxZ - minZ, 4)
+  const height = Math.max(model.ceiling * 2.2, span * 0.85)
+  const back = span * 0.95
+  return [cx + back * 0.55, height, cz + back * 0.75]
 }
 
 function MoveButton({ label, onDown, onUp }: { label: string; onDown: () => void; onUp: () => void }) {
@@ -139,10 +326,14 @@ function Scene({
   model,
   move,
   api,
+  poseRef,
+  mode,
 }: {
   model: RoomModel
   move: MutableRefObject<MoveState>
   api: MutableRefObject<{ toggleAimed: () => void }>
+  poseRef: MutableRefObject<PlayerPose>
+  mode: "roam" | "exhibit"
 }) {
   const { minX, maxX, minZ, maxZ } = model.bounds
   const pad = 1.6
@@ -159,10 +350,12 @@ function Scene({
         <planeGeometry args={[width, depth]} />
         <meshStandardMaterial color="#cbbfaa" />
       </mesh>
-      <mesh position={[cx, model.ceiling, cz]} rotation={[Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[width, depth]} />
-        <meshStandardMaterial color="#f3efe6" side={2} />
-      </mesh>
+      {mode === "exhibit" ? null : (
+        <mesh position={[cx, model.ceiling, cz]} rotation={[Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[width, depth]} />
+          <meshStandardMaterial color="#f3efe6" side={2} />
+        </mesh>
+      )}
       {model.solids.map((solid) => (
         <mesh key={solid.id} position={[solid.center.x, solid.center.y, solid.center.z]} rotation={[0, solid.yaw, 0]}>
           <boxGeometry args={[solid.size.x, solid.size.y, solid.size.z]} />
@@ -175,8 +368,93 @@ function Scene({
           <meshStandardMaterial color="#c5e4f2" transparent opacity={0.38} roughness={0.05} metalness={0.05} depthWrite={false} />
         </mesh>
       ))}
-      <Walker model={model} move={move} api={api} />
+      <Doors model={model} move={move} api={api} poseRef={poseRef} mode={mode} />
     </>
+  )
+}
+
+function Doors({
+  model,
+  move,
+  api,
+  poseRef,
+  mode,
+}: {
+  model: RoomModel
+  move: MutableRefObject<MoveState>
+  api: MutableRefObject<{ toggleAimed: () => void }>
+  poseRef: MutableRefObject<PlayerPose>
+  mode: "roam" | "exhibit"
+}) {
+  if (mode === "roam") {
+    return <Walker model={model} move={move} api={api} poseRef={poseRef} />
+  }
+  return (
+    <>
+      <BirdEyeCamera model={model} />
+      <StaticDoors model={model} />
+    </>
+  )
+}
+
+function StaticDoors({ model }: { model: RoomModel }) {
+  return (
+    <>
+      {model.swings.map((door) => (
+        <group key={door.id} position={[door.hingeX, 0, door.hingeZ]} rotation={[0, door.yawClosed, 0]}>
+          <mesh position={[door.length / 2, door.height / 2, 0]}>
+            <boxGeometry args={[door.length, door.height, door.thickness]} />
+            <meshStandardMaterial color="#7a4e34" roughness={0.8} />
+          </mesh>
+        </group>
+      ))}
+      {model.sliders.map((door) =>
+        door.leaves.map((leaf, index) => (
+          <mesh
+            key={`${door.id}:${index}`}
+            position={[leaf.x, door.height / 2, leaf.z]}
+            rotation={[0, leaf.yaw, 0]}
+          >
+            <boxGeometry args={[leaf.length, door.height, leaf.thickness]} />
+            <meshStandardMaterial color={index === 0 ? "#6d5648" : "#7d6554"} roughness={0.75} />
+          </mesh>
+        )),
+      )}
+    </>
+  )
+}
+
+function BirdEyeCamera({ model }: { model: RoomModel }) {
+  const { camera } = useThree()
+  const target = useMemo(() => {
+    const { minX, maxX, minZ, maxZ } = model.bounds
+    return new Vector3((minX + maxX) / 2, 0, (minZ + maxZ) / 2)
+  }, [model])
+
+  useEffect(() => {
+    const [x, y, z] = exhibitCameraPosition(model)
+    camera.position.set(x, y, z)
+    camera.near = 0.2
+    camera.far = 250
+    if (camera instanceof PerspectiveCamera) {
+      camera.fov = 42
+      camera.updateProjectionMatrix()
+    }
+    camera.lookAt(target)
+  }, [camera, model, target])
+
+  return (
+    <OrbitControls
+      makeDefault
+      target={target}
+      enableDamping
+      dampingFactor={0.08}
+      minDistance={3}
+      maxDistance={Math.max(28, (model.bounds.maxX - model.bounds.minX) * 3)}
+      maxPolarAngle={Math.PI * 0.42}
+      minPolarAngle={Math.PI * 0.12}
+      enablePan
+    />
   )
 }
 
@@ -184,10 +462,12 @@ function Walker({
   model,
   move,
   api,
+  poseRef,
 }: {
   model: RoomModel
   move: MutableRefObject<MoveState>
   api: MutableRefObject<{ toggleAimed: () => void }>
+  poseRef: MutableRefObject<PlayerPose>
 }) {
   const { camera, gl, scene } = useThree()
   const getKeys = useKeyboardControls()[1] as () => Keys
@@ -226,7 +506,14 @@ function Walker({
     camera.rotation.order = "YXZ"
     camera.rotation.y = model.spawn.yaw
     camera.rotation.x = 0
-  }, [model, camera])
+    camera.near = 0.08
+    camera.far = 120
+    if (camera instanceof PerspectiveCamera) {
+      camera.fov = 68
+      camera.updateProjectionMatrix()
+    }
+    poseRef.current = { x: pos.current.x, z: pos.current.z, yaw: yaw.current }
+  }, [model, camera, poseRef])
 
   useEffect(() => {
     const el = gl.domElement
@@ -246,8 +533,8 @@ function Walker({
       const dy = event.clientY - last.current.y
       last.current = { x: event.clientX, y: event.clientY }
       dragDist.current += Math.abs(dx) + Math.abs(dy)
-      yaw.current -= dx * 0.005
-      pitch.current = Math.max(-1.15, Math.min(1.15, pitch.current - dy * 0.005))
+      yaw.current -= dx * 0.0045
+      pitch.current = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, pitch.current - dy * 0.0035))
     }
     const up = (event: PointerEvent) => {
       if (!dragging.current) return
@@ -309,6 +596,7 @@ function Walker({
     camera.rotation.order = "YXZ"
     camera.rotation.y = yaw.current
     camera.rotation.x = pitch.current
+    poseRef.current = { x: pos.current.x, z: pos.current.z, yaw: yaw.current }
 
     const ids = [...model.swings.map((door) => door.id), ...model.sliders.map((door) => door.id)]
     for (const id of ids) {

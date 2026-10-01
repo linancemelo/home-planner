@@ -8,7 +8,9 @@ import {
   isBlocked,
   planToWorld,
   shortestAngle,
+  worldToPlan,
   yawForDirection,
+  yawToPlanDir,
 } from "../src/lib/scene/room.ts"
 import { parseFloorplan } from "../src/lib/schema.ts"
 import type { Floorplan } from "../src/types/floorplan.ts"
@@ -31,6 +33,18 @@ const bl = planToWorld({ x: 1, y: 2 }, "bottom-left")
 assert(bl.x === 1 && bl.z === -2, `bottom-left world ${bl.x},${bl.z}`)
 const tl = planToWorld({ x: 1, y: 2 }, "top-left")
 assert(tl.x === 1 && tl.z === 2, `top-left world ${tl.x},${tl.z}`)
+
+
+const blBack = worldToPlan(bl.x, bl.z, "bottom-left")
+assert(blBack.x === 1 && blBack.y === 2, `worldToPlan bottom-left ${blBack.x},${blBack.y}`)
+const tlBack = worldToPlan(tl.x, tl.z, "top-left")
+assert(tlBack.x === 1 && tlBack.y === 2, `worldToPlan top-left ${tlBack.x},${tlBack.y}`)
+
+// yaw 0 視線沿 -Z；左下原點時平面「向上」(+Y) 對 -Z，故平面前進為 +Y。
+const faceBl = yawToPlanDir(0, "bottom-left")
+assert(near(faceBl.x, 0, 1e-6) && near(faceBl.y, 1, 1e-6), `yawToPlanDir bl ${faceBl.x},${faceBl.y}`)
+const faceTl = yawToPlanDir(0, "top-left")
+assert(near(faceTl.x, 0, 1e-6) && near(faceTl.y, -1, 1e-6), `yawToPlanDir tl ${faceTl.x},${faceTl.y}`)
 
 for (const [dx, dz] of [
   [1, 0],
@@ -62,6 +76,30 @@ assert(
   "simple spawn blocked",
 )
 assert(isBlocked(1.8, -3.8, PLAYER_RADIUS, simple.collision), "simple left wall should block")
+
+// 3D 牆心與平面中心線對齊（同一 Floorplan JSON）。
+for (const wall of loadPlan("simple-room.expected.json").walls) {
+  const aw = planToWorld(wall.a, "bottom-left")
+  const bw = planToWorld(wall.b, "bottom-left")
+  const mx = (aw.x + bw.x) / 2
+  const mz = (aw.z + bw.z) / 2
+  // 開口可能把牆切成多段；每段中心應落在整段中心線上
+  const pieces = simple.solids.filter((s) => s.id.startsWith(wall.id))
+  assert(pieces.length >= 1, `${wall.id} missing solid`)
+  for (const piece of pieces) {
+    const along = Math.hypot(bw.x - aw.x, bw.z - aw.z) || 1
+    const t =
+      ((piece.center.x - aw.x) * (bw.x - aw.x) + (piece.center.z - aw.z) * (bw.z - aw.z)) /
+      (along * along)
+    const cx = aw.x + (bw.x - aw.x) * t
+    const cz = aw.z + (bw.z - aw.z) * t
+    const perp = Math.hypot(piece.center.x - cx, piece.center.z - cz)
+    assert(perp < 1e-6, `${wall.id} solid off centerline perp=${perp}`)
+  }
+  void mx
+  void mz
+}
+
 const doorCenter = { x: 4.05, z: -2 }
 assert(!isBlocked(doorCenter.x, doorCenter.z, 0.05, simple.collision), "door opening is not a solid wall")
 assert(isBlocked(doorCenter.x, doorCenter.z, 0.05, doorBlockers(simple, {})), "closed swing blocks")

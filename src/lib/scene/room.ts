@@ -1,13 +1,46 @@
 import type { Floorplan, Vec2 } from "../../types/floorplan.ts"
 import { dist } from "../geometry.ts"
 
-/** 平面公尺 → Three.js XZ。Y 向上。左下原點的平面 +y 對到 -Z。 */
+/**
+ * 平面公尺 → Three.js XZ（世界 Y 向上）。
+ *
+ * Floorplan 與 2D 疊圖都用同一套公尺座標：
+ * - `bottom-left`（預設、偵測輸出）：平面 +Y 向上（圖面向上），對到世界 -Z。
+ * - `top-left`：平面 +Y 向下（影像列方向），對到世界 +Z。
+ *
+ * 牆段以中心線放置，厚度沿法線各半；與 2D 以中心線描邊一致。
+ * 門窗開口座標直接沿用 JSON，不再二次換算。
+ */
 export function planToWorld(
   p: Vec2,
   origin: Floorplan["meta"]["coordinateOrigin"],
 ): { x: number; z: number } {
   if (origin === "top-left") return { x: p.x, z: p.y }
   return { x: p.x, z: -p.y }
+}
+
+/** planToWorld 的反函式：世界 XZ → 平面公尺（供小地圖追蹤）。 */
+export function worldToPlan(
+  x: number,
+  z: number,
+  origin: Floorplan["meta"]["coordinateOrigin"],
+): Vec2 {
+  if (origin === "top-left") return { x, y: z }
+  return { x, y: -z }
+}
+
+/**
+ * 第一人稱 yaw（Three.js rotation.y，視線沿局部 -Z）→ 平面方向（單位向量）。
+ * 與 Walker 前進方向 (-sin yaw, -cos yaw) 一致。
+ */
+export function yawToPlanDir(
+  yaw: number,
+  origin: Floorplan["meta"]["coordinateOrigin"],
+): Vec2 {
+  const fx = -Math.sin(yaw)
+  const fz = -Math.cos(yaw)
+  if (origin === "top-left") return { x: fx, y: fz }
+  return { x: fx, y: -fz }
 }
 
 /** 局部 +X 轉到世界 (dx, dz) 時，物體的 rotation.y。 */

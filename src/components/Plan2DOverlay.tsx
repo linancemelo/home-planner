@@ -211,8 +211,12 @@ function drawPlan(
   excavations: PipelineResult["excavations"],
   layers: Layers,
 ) {
-  const { metersPerPixel: mpp, imageHeightPx } = plan.meta
-  const toPx = (p: Vec2) => meterToPixel(p, imageHeightPx, mpp)
+  const { metersPerPixel: mpp, imageHeightPx, coordinateOrigin } = plan.meta
+  // 與 3D planToWorld / 小地圖同一套：左下原點翻 Y；左上原點則公尺 Y 已是影像列方向。
+  const toPx = (p: Vec2) =>
+    coordinateOrigin === "top-left"
+      ? { x: p.x / mpp, y: p.y / mpp }
+      : meterToPixel(p, imageHeightPx, mpp)
 
   ctx.lineCap = "round"
   ctx.lineJoin = "round"
