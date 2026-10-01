@@ -5,77 +5,58 @@
     "doors": 7,
     "windows": 5,
     "rooms": 9,
-    "ring_walls": 13,
-    "peri_windows": 0,
-    "room_src": "房間採用 RW-YOLO 遮罩（9；CubiCasa/OpenCV 作後備）。",
-    "door_ids": [
-      "d-cubi-1",
-      "d-cubi-2",
-      "d-cubi-3",
-      "d-access-4",
-      "d-access-5",
-      "d-access-6",
-      "d-access-7"
-    ],
-    "window_ids": [
-      "win-cubi-1",
-      "win-cubi-2",
-      "win-cubi-5",
-      "win-cubi-6",
-      "win-cubi-8"
+    "ring_segs": 12,
+    "non_aabb_rooms": 2,
+    "windows_on_ring": 5,
+    "mpp": 0.00992063492063492,
+    "notes_head": [
+      "外周界 ring（厚牆中心線）：src=foot+medial approxε=0.007 段=14 Σ≈33.9m 閉合。",
+      "CubiCasa 牆中心線候選 40。",
+      "房間採用 RW-YOLO 遮罩（9；CubiCasa/OpenCV 作後備）。",
+      "RW-YOLO 牆為主結構併入 23（minL=0.55）。",
+      "厚牆中心線內隔間併入 1 段（medial H/V）。",
+      "房間多邊形以牆圖約束 3/9（非 AABB／L 形 ortho）。",
+      "房間多邊形以牆圖約束 1/9（非 AABB／L 形 ortho）。",
+      "開口 flush 外周界：門 3、窗 5（窗僅 ring）。"
     ]
   },
   {
     "image": "964226aa-b.jpg",
     "walls": 17,
-    "doors": 8,
+    "doors": 7,
     "windows": 3,
-    "rooms": 7,
-    "ring_walls": 6,
-    "peri_windows": 0,
-    "room_src": "房間採用 RW-YOLO 遮罩（8；CubiCasa/OpenCV 作後備）。",
-    "door_ids": [
-      "d-yolo-3",
-      "d-yolo-4",
-      "d-yolo-5",
-      "d-yolo-6",
-      "d-yolo-7",
-      "d-cubi-1",
-      "d-access-7",
-      "d-access-8"
-    ],
-    "window_ids": [
-      "win-yolo-1",
-      "win-yolo-2",
-      "win-yolo-4"
+    "rooms": 8,
+    "ring_segs": 6,
+    "non_aabb_rooms": 2,
+    "windows_on_ring": 3,
+    "mpp": 0.010582010582010581,
+    "notes_head": [
+      "外周界 ring（厚牆中心線）：src=foot+medial approxε=0.005 段=7 Σ≈19.2m 閉合。",
+      "CubiCasa 牆中心線候選 40。",
+      "房間採用 RW-YOLO 遮罩（8；CubiCasa/OpenCV 作後備）。",
+      "RW-YOLO 牆為主結構併入 24（minL=0.55）。",
+      "房間多邊形以牆圖約束 3/7（非 AABB／L 形 ortho）。",
+      "房間多邊形以牆圖約束 3/8（非 AABB／L 形 ortho）。",
+      "開口 flush 外周界：門 3、窗 4（窗僅 ring）。"
     ]
   },
   {
     "image": "bb00b5bf-b.jpg",
-    "walls": 22,
+    "walls": 24,
     "doors": 9,
-    "windows": 5,
+    "windows": 4,
     "rooms": 9,
-    "ring_walls": 9,
-    "peri_windows": 0,
-    "room_src": "房間採用 RW-YOLO 遮罩（9；CubiCasa/OpenCV 作後備）。",
-    "door_ids": [
-      "d-yolo-1",
-      "d-yolo-2",
-      "d-yolo-3",
-      "d-yolo-4",
-      "d-yolo-5",
-      "d-yolo-9",
-      "d-access-7",
-      "d-access-8",
-      "d-access-9"
-    ],
-    "window_ids": [
-      "win-yolo-4",
-      "win-cubi-1",
-      "win-ink-1",
-      "win-ink-2",
-      "win-ink-3"
+    "ring_segs": 13,
+    "non_aabb_rooms": 3,
+    "windows_on_ring": 4,
+    "mpp": 0.005755726948313572,
+    "notes_head": [
+      "外周界 ring（厚牆中心線）：src=ink+medial approxε=0.005 段=19 Σ≈30.4m 閉合。",
+      "CubiCasa 牆中心線候選 17。",
+      "房間採用 RW-YOLO 遮罩（9；CubiCasa/OpenCV 作後備）。",
+      "RW-YOLO 牆為主結構併入 24（minL=0.55）。",
+      "房間多邊形以牆圖約束 2/9（非 AABB／L 形 ortho）。",
+      "開口 flush 外周界：門 3、窗 6（窗僅 ring）。"
     ]
   }
 ]

@@ -199,19 +199,18 @@ def _wall_mask_centerline_m(
         return None
     return a, b
 
-def _ortho_polygon_from_mask(mask: np.ndarray, *, max_verts: int = 12) -> np.ndarray | None:
-    """Axis-aligned-ish room outline from free-space mask.
+def _ortho_polygon_from_mask(mask: np.ndarray, *, max_verts: int = 16) -> np.ndarray | None:
+    """Rectilinear room outline from free-space mask (L/T allowed).
 
-    Prefer morphologically closed rectilinear outlines when the blob is L/T-shaped
-    (fill low); fall back to AABB for compact rectangular rooms. Avoid jagged
-    furniture contours that fail overlay QA.
+    Prefer morphologically closed ortho outlines when the blob is non-rectangular
+    (fill low → L/T/U); fall back to AABB only for compact rectangular rooms.
     """
     m = (mask > 0).astype(np.uint8) * 255
     if m.max() == 0:
         return None
     # Light close to fill furniture holes inside a room without bridging walls
     k = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    m_closed = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=1)
+    m_closed = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=2)
     ys, xs = np.where(m_closed > 0)
     if xs.size < 30:
         return None
@@ -221,35 +220,49 @@ def _ortho_polygon_from_mask(mask: np.ndarray, *, max_verts: int = 12) -> np.nda
     area = int(xs.size)
     fill = area / max(bw * bh, 1)
     aabb = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
-    # Compact / rectangular → AABB
-    if fill >= 0.62 or area < 6000:
+    # Only force AABB for very compact / nearly-full rectangles
+    if fill >= 0.82 or area < 2500:
         return aabb
-    # L/T shaped: try ortho-snapped approx on closed mask
-    poly = _approx_polygon(m_closed, epsilon_frac=0.028)
-    if poly is None or len(poly) < 4:
-        return aabb
-    pts = poly.astype(np.float64).tolist()
-    snapped = [pts[0][:]]
-    for i in range(1, len(pts)):
-        px, py = snapped[-1]
-        qx, qy = pts[i]
-        if abs(qx - px) < abs(qy - py) * 0.40:
-            qx = px
-        elif abs(qy - py) < abs(qx - px) * 0.40:
-            qy = py
-        snapped.append([qx, qy])
-    if abs(snapped[-1][0] - snapped[0][0]) < 4:
-        snapped[-1][0] = snapped[0][0]
-    if abs(snapped[-1][1] - snapped[0][1]) < 4:
-        snapped[-1][1] = snapped[0][1]
-    arr = np.array(snapped, dtype=np.float64)
-    if len(arr) < 4 or len(arr) > max_verts:
-        return aabb
-    # Reject if ortho poly area far from mask (junk contour)
-    poly_area = abs(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2)))
-    if poly_area < area * 0.55:
-        return aabb
-    return arr
+    # Non-AABB: ortho-snapped approx (try a few epsilons for L/T)
+    best_arr = None
+    best_score = -1.0
+    for ef in (0.018, 0.024, 0.032, 0.040):
+        poly = _approx_polygon(m_closed, epsilon_frac=ef)
+        if poly is None or len(poly) < 4:
+            continue
+        pts = poly.astype(np.float64).tolist()
+        snapped = [pts[0][:]]
+        for i in range(1, len(pts)):
+            px, py = snapped[-1]
+            qx, qy = pts[i]
+            if abs(qx - px) < abs(qy - py) * 0.45:
+                qx = px
+            elif abs(qy - py) < abs(qx - px) * 0.45:
+                qy = py
+            snapped.append([qx, qy])
+        if abs(snapped[-1][0] - snapped[0][0]) < 4:
+            snapped[-1][0] = snapped[0][0]
+        if abs(snapped[-1][1] - snapped[0][1]) < 4:
+            snapped[-1][1] = snapped[0][1]
+        # Drop near-duplicate verts
+        cleaned = [snapped[0]]
+        for p in snapped[1:]:
+            if abs(p[0] - cleaned[-1][0]) > 3 or abs(p[1] - cleaned[-1][1]) > 3:
+                cleaned.append(p)
+        arr = np.array(cleaned, dtype=np.float64)
+        if len(arr) < 4 or len(arr) > max_verts:
+            continue
+        poly_area = abs(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2)))
+        if poly_area < area * 0.45 or poly_area > area * 1.35:
+            continue
+        # Prefer more verts when fill is low (true L), else fewer
+        score = poly_area / max(area, 1) + (0.08 * min(len(arr), 10) if fill < 0.72 else 0.0)
+        if score > best_score:
+            best_score = score
+            best_arr = arr
+    if best_arr is not None:
+        return best_arr
+    return aabb
 
 
 def _classify_name(name: str) -> str | None:
@@ -1371,6 +1384,245 @@ def _walls_form_closed_ring(
     return unmatched <= 2
 
 
+
+def _morph_skeleton(bin_u8: np.ndarray, *, max_iter: int = 80) -> np.ndarray:
+    """Morphological skeleton (Zhang-Suen style via open/erode loop)."""
+    img = (bin_u8 > 0).astype(np.uint8) * 255
+    skel = np.zeros_like(img)
+    element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    for _ in range(max_iter):
+        opened = cv2.morphologyEx(img, cv2.MORPH_OPEN, element)
+        temp = cv2.subtract(img, opened)
+        eroded = cv2.erode(img, element)
+        skel = cv2.bitwise_or(skel, temp)
+        img = eroded
+        if cv2.countNonZero(img) == 0:
+            break
+    return skel
+
+
+def _thick_wall_ink_mask(
+    bgr: np.ndarray,
+    foot: np.ndarray,
+    *,
+    plan_style: str = "cad",
+) -> np.ndarray:
+    """Style-aware thick wall ink (fill+stroke), furniture mats suppressed."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1]
+    marketing = plan_style == "marketing"
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    if marketing:
+        dark = (blur < 82).astype(np.uint8) * 255
+        dark = cv2.bitwise_and(dark, foot)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k3, iterations=2)
+        dist = cv2.distanceTransform(dark, cv2.DIST_L2, 5)
+        thick = ((dist >= 1.15) & (dark > 0)).astype(np.uint8) * 255
+        # Drop compact furniture solids
+        n, lab, st, _ = cv2.connectedComponentsWithStats(thick, connectivity=8)
+        ink = np.zeros_like(thick)
+        for i in range(1, n):
+            area = int(st[i, cv2.CC_STAT_AREA])
+            ww = int(st[i, cv2.CC_STAT_WIDTH])
+            hh = int(st[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            solidity = area / max(ww * hh, 1)
+            if area >= 320 and aspect < 2.6 and solidity > 0.50:
+                continue
+            if area >= 40 and (aspect >= 1.7 or area >= 220):
+                ink[lab == i] = 255
+        # Keep elongated stroke edges for thin perimeter
+        edges = cv2.Canny(blur, 40, 120)
+        darkish = cv2.dilate((blur < 95).astype(np.uint8) * 255, k3, iterations=1)
+        stroke = cv2.bitwise_and(cv2.bitwise_and(edges, darkish), foot)
+        n2, lab2, st2, _ = cv2.connectedComponentsWithStats(stroke, connectivity=8)
+        for i in range(1, n2):
+            area = int(st2[i, cv2.CC_STAT_AREA])
+            ww = int(st2[i, cv2.CC_STAT_WIDTH])
+            hh = int(st2[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            if area >= 18 and aspect >= 3.0 and max(ww, hh) >= 22:
+                ink[lab2 == i] = 255
+    else:
+        dark = ((blur > 25) & (blur < 170) & (sat < 65)).astype(np.uint8) * 255
+        dark = cv2.bitwise_and(dark, foot)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k3, iterations=2)
+        dist = cv2.distanceTransform(dark, cv2.DIST_L2, 5)
+        thick = ((dist >= 0.95) & (dark > 0)).astype(np.uint8) * 255
+        n, lab, st, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+        ink = np.zeros_like(dark)
+        for i in range(1, n):
+            area = int(st[i, cv2.CC_STAT_AREA])
+            ww = int(st[i, cv2.CC_STAT_WIDTH])
+            hh = int(st[i, cv2.CC_STAT_HEIGHT])
+            aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+            mean_t = float(dist[lab == i].mean()) if area else 0.0
+            if area >= 40 and aspect >= 1.5:
+                ink[lab == i] = 255
+            elif area >= 160 and mean_t >= 1.0:
+                ink[lab == i] = 255
+        ink = cv2.bitwise_or(ink, thick)
+    ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k3, iterations=2)
+    return ink
+
+
+def _medial_axis_mask(ink: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Distance-transform medial ridge + morphological skeleton of thick ink.
+
+    Returns (medial_u8, dist_f32). Medial sits on thick-wall *centerline*,
+    not thin jagged outer edges of wall ink.
+    """
+    ink_b = (ink > 0).astype(np.uint8) * 255
+    if ink_b.max() == 0:
+        return ink_b, np.zeros(ink_b.shape, np.float32)
+    dist = cv2.distanceTransform(ink_b, cv2.DIST_L2, 5)
+    # Ridge: local maxima of distance (dilate compare)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    dil = cv2.dilate(dist, k)
+    ridge = ((dist >= dil - 0.15) & (dist >= 1.0) & (ink_b > 0)).astype(np.uint8) * 255
+    # Also keep morphological skeleton of thick cores (dist>=1.2)
+    thick = ((dist >= 1.2) & (ink_b > 0)).astype(np.uint8) * 255
+    skel = _morph_skeleton(thick if thick.max() else ink_b)
+    medial = cv2.bitwise_or(ridge, skel)
+    # Light dilate so later nearest-medial projections are stable
+    medial = cv2.dilate(medial, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
+    return medial, dist
+
+
+def _snap_polyline_to_medial(
+    pts_xy: np.ndarray,
+    medial: np.ndarray,
+    dist: np.ndarray,
+    *,
+    max_search: int = 28,
+) -> np.ndarray:
+    """Move closed polyline vertices onto nearest thick-wall medial pixel."""
+    h, w = medial.shape[:2]
+    med_yx = np.column_stack(np.where(medial > 0))  # (y, x)
+    if len(med_yx) < 8:
+        return pts_xy
+    out = []
+    for p in pts_xy:
+        x, y = float(p[0]), float(p[1])
+        xi, yi = int(round(x)), int(round(y))
+        best = (x, y)
+        best_d = 1e18
+        # Prefer high-distance medial pixels (true thick center)
+        for r in range(0, max_search + 1, 2):
+            y0, y1 = max(0, yi - r), min(h, yi + r + 1)
+            x0, x1 = max(0, xi - r), min(w, xi + r + 1)
+            roi = medial[y0:y1, x0:x1]
+            if roi.max() == 0:
+                continue
+            ys, xs = np.where(roi > 0)
+            for yy, xx in zip(ys, xs):
+                gy, gx = y0 + int(yy), x0 + int(xx)
+                d = (gx - x) ** 2 + (gy - y) ** 2
+                # Bonus for thicker centerline
+                d -= 0.35 * float(dist[gy, gx]) ** 2
+                if d < best_d:
+                    best_d = d
+                    best = (float(gx), float(gy))
+            if best_d < 1e17 and r >= 4:
+                break
+        out.append(best)
+    return np.array(out, dtype=np.float64)
+
+
+def _hv_runs_from_medial(
+    medial: np.ndarray,
+    *,
+    height_px: int,
+    mpp: float,
+    min_run_px: int = 28,
+    prefix: str = "w-med",
+) -> list[dict[str, Any]]:
+    """Vectorize medial axis into long near-H/V centerline segments."""
+    if medial.max() == 0 or mpp <= 0:
+        return []
+    h, w = medial.shape[:2]
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    med = cv2.dilate(medial, k3, iterations=1)
+    hw = max(15, int(min(h, w) * 0.020)) | 1
+    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (hw, 1))
+    kv = cv2.getStructuringElement(cv2.MORPH_RECT, (1, hw))
+    horiz = cv2.morphologyEx(med, cv2.MORPH_OPEN, kh)
+    vert = cv2.morphologyEx(med, cv2.MORPH_OPEN, kv)
+    out: list[dict[str, Any]] = []
+
+    def _runs(mask: np.ndarray, orient: str) -> None:
+        nlab, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        for i in range(1, nlab):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < min_run_px * 2:
+                continue
+            ys, xs = np.where(labels == i)
+            if xs.size == 0:
+                continue
+            if orient == "h":
+                cy = int(np.median(ys))
+                band = np.zeros(w, dtype=bool)
+                for yb in range(max(0, cy - 2), min(h, cy + 3)):
+                    band |= labels[yb, :] == i
+                j = 0
+                while j < w:
+                    if band[j]:
+                        k = j
+                        while k < w and band[k]:
+                            k += 1
+                        if k - j >= min_run_px:
+                            a = _px_to_m(float(j), float(cy), height_px=height_px, mpp=mpp)
+                            b = _px_to_m(float(k), float(cy), height_px=height_px, mpp=mpp)
+                            if _is_structural_edge(a[0], a[1], b[0], b[1], min_len=0.55):
+                                out.append(
+                                    {
+                                        "id": f"{prefix}-h{len(out)}",
+                                        "a": _vec(*a),
+                                        "b": _vec(*b),
+                                        "thicknessM": WALL_THICKNESS_M,
+                                        "thicknessAssumed": True,
+                                        "heightM": CEILING_HEIGHT_M,
+                                    }
+                                )
+                        j = k
+                    else:
+                        j += 1
+            else:
+                cx = int(np.median(xs))
+                band = np.zeros(h, dtype=bool)
+                for xb in range(max(0, cx - 2), min(w, cx + 3)):
+                    band |= labels[:, xb] == i
+                j = 0
+                while j < h:
+                    if band[j]:
+                        k = j
+                        while k < h and band[k]:
+                            k += 1
+                        if k - j >= min_run_px:
+                            a = _px_to_m(float(cx), float(j), height_px=height_px, mpp=mpp)
+                            b = _px_to_m(float(cx), float(k), height_px=height_px, mpp=mpp)
+                            if _is_structural_edge(a[0], a[1], b[0], b[1], min_len=0.55):
+                                out.append(
+                                    {
+                                        "id": f"{prefix}-v{len(out)}",
+                                        "a": _vec(*a),
+                                        "b": _vec(*b),
+                                        "thicknessM": WALL_THICKNESS_M,
+                                        "thicknessAssumed": True,
+                                        "heightM": CEILING_HEIGHT_M,
+                                    }
+                                )
+                        j = k
+                    else:
+                        j += 1
+
+    _runs(horiz, "h")
+    _runs(vert, "v")
+    return out
+
+
 def _outer_perimeter_ring_walls(
     bgr: np.ndarray,
     *,
@@ -1382,51 +1634,60 @@ def _outer_perimeter_ring_walls(
     foot: np.ndarray,
     plan_style: str = "cad",
 ) -> tuple[list[dict[str, Any]], bool, list[str]]:
-    """Continuous outer perimeter from morph-closed ROI ink / footprint contour.
+    """Continuous outer perimeter on thick-wall *centerline* (medial axis).
 
-    1) Build style-aware ink inside footprint, morphological close.
-    2) Largest external footprint contour → snap vertices inward to ink.
-    3) approxPolyDP (smart epsilon) + H/V snap → closed ring wall segments.
-    Priority: long perimeter walls that overlap real wall ink (hand-trace level).
+    1) Thick wall ink (fill+stroke) inside footprint.
+    2) Distance-transform medial ridge + skeleton (not thin jagged outer edges).
+    3) Footprint / ink outer contour → snap vertices to medial centerline.
+    4) approxPolyDP + H/V snap → closed ring of long centerline segments.
     """
     notes: list[str] = []
     h, w = bgr.shape[:2]
     if mpp <= 0 or foot.max() == 0:
         return [], False, notes
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     marketing = plan_style == "marketing"
-    if marketing:
-        ink = (blur < 88).astype(np.uint8) * 255
-    else:
-        ink = ((blur > 25) & (blur < 175) & (hsv[:, :, 1] < 70)).astype(np.uint8) * 255
-    ink = cv2.bitwise_and(ink, foot)
+    # Thick ink + medial centerline (not edge-hugging)
+    ink_thick = _thick_wall_ink_mask(bgr, foot, plan_style=plan_style)
     kclose = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-    ink_c = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, kclose, iterations=2 if marketing else 3)
+    ink_c = cv2.morphologyEx(
+        ink_thick, cv2.MORPH_CLOSE, kclose, iterations=2 if marketing else 3
+    )
+    medial, dist = _medial_axis_mask(ink_c)
+    # Fallback soft ink for support probes when medial sparse
+    if cv2.countNonZero(medial) < 80:
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (3, 3), 0)
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        if marketing:
+            soft = (blur < 88).astype(np.uint8) * 255
+        else:
+            soft = ((blur > 25) & (blur < 175) & (hsv[:, :, 1] < 70)).astype(np.uint8) * 255
+        soft = cv2.bitwise_and(soft, foot)
+        ink_c = cv2.morphologyEx(soft, cv2.MORPH_CLOSE, kclose, iterations=2)
+        medial, dist = _medial_axis_mask(ink_c)
 
-    # Prefer large external contour of morph-closed ink when it covers enough of footprint
     foot_cnts, _ = cv2.findContours(foot, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not foot_cnts:
         return [], False, notes
     foot_cnt = max(foot_cnts, key=cv2.contourArea)
     foot_a = float(cv2.contourArea(foot_cnt))
-    src = "foot"
+    src = "foot+medial"
     base_cnt = foot_cnt
     ink_cnts, _ = cv2.findContours(ink_c, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if ink_cnts:
         ink_cnt = max(ink_cnts, key=cv2.contourArea)
-        if float(cv2.contourArea(ink_cnt)) >= foot_a * 0.35:
-            # Still refine from footprint for marketing (ink blob may hug furniture);
-            # CAD mid-gray fills often give a better outer ink contour.
-            if not marketing:
-                base_cnt = ink_cnt
-                src = "ink"
+        if float(cv2.contourArea(ink_cnt)) >= foot_a * 0.35 and not marketing:
+            base_cnt = ink_cnt
+            src = "ink+medial"
 
+    # First pull contour onto ink, then onto thick-wall medial centerline
     refined = _refine_contour_pts_to_ink(base_cnt, ink_c, max_search=30)
     if len(refined) < 6:
         notes.append("外周界輪廓頂點不足，略過 ring。")
         return [], False, notes
+    refined = _snap_polyline_to_medial(
+        refined.astype(np.float64), medial, dist, max_search=32
+    )
     refined_cnt = refined.reshape(-1, 1, 2).astype(np.int32)
     peri = float(cv2.arcLength(refined_cnt, True))
     if peri < 80:
@@ -1442,6 +1703,8 @@ def _outer_perimeter_ring_walls(
         best = ap
         used_ef = ef
     pts = best.reshape(-1, 2).astype(np.float64)
+    # Re-snap approx vertices to medial so ring sits on thick centerline
+    pts = _snap_polyline_to_medial(pts, medial, dist, max_search=24)
     snapped = _hv_snap_closed_polyline(pts)
     walls: list[dict[str, Any]] = []
     n = len(snapped)
@@ -1494,9 +1757,12 @@ def _outer_perimeter_ring_walls(
         wseg["id"] = f"w-ring-{i+1}"
     closed = _walls_form_closed_ring(walls, gap_tol_m=0.70)
     # If ink contour failed to close, retry once from footprint (often cleaner outer hull)
-    if not closed and src == "ink":
+    if not closed and "ink" in src:
         refined_f = _refine_contour_pts_to_ink(foot_cnt, ink_c, max_search=30)
         if len(refined_f) >= 6:
+            refined_f = _snap_polyline_to_medial(
+                refined_f.astype(np.float64), medial, dist, max_search=32
+            )
             rc = refined_f.reshape(-1, 1, 2).astype(np.int32)
             peri_f = float(cv2.arcLength(rc, True))
             best_f = rc
@@ -1509,7 +1775,9 @@ def _outer_perimeter_ring_walls(
                     break
                 best_f = ap
                 ef_f = ef
-            pts_f = best_f.reshape(-1, 2).astype(np.float64)
+            pts_f = _snap_polyline_to_medial(
+                best_f.reshape(-1, 2).astype(np.float64), medial, dist, max_search=24
+            )
             snapped_f = _hv_snap_closed_polyline(pts_f)
             walls_f: list[dict[str, Any]] = []
             nf = len(snapped_f)
@@ -1550,12 +1818,12 @@ def _outer_perimeter_ring_walls(
             if _walls_form_closed_ring(walls_f, gap_tol_m=0.70) and len(walls_f) >= 4:
                 walls = walls_f
                 closed = True
-                src = "foot-retry"
+                src = "foot-retry+medial"
                 used_ef = ef_f
     tot = sum(_seg_length_m(w) for w in walls)
     notes.append(
-        f"外周界 ring：src={src} approxε={used_ef} 段={len(walls)} Σ≈{tot:.1f}m "
-        f"{'閉合' if closed else '未完全閉合'}。"
+        f"外周界 ring（厚牆中心線）：src={src} approxε={used_ef} 段={len(walls)} "
+        f"Σ≈{tot:.1f}m {'閉合' if closed else '未完全閉合'}。"
     )
     return walls, closed, notes
 
@@ -3886,7 +4154,8 @@ def _rooms_from_wall_barriers(
     if rw * rh > 4_000_000:
         return [], notes
     barrier = np.zeros((rh, rw), np.uint8)
-    thick = max(2, int(round(0.14 / mpp)))
+    # Thicker barriers seal door gaps → planar faces / L-rooms from wall graph
+    thick = max(3, int(round(0.22 / mpp)))
 
     def _m_to_r(x: float, y: float) -> tuple[int, int]:
         px = int(round((x - min_x) / mpp))
@@ -3898,9 +4167,10 @@ def _rooms_from_wall_barriers(
         p2 = _m_to_r(w["b"]["x"], w["b"]["y"])
         cv2.line(barrier, p1, p2, 255, thick)
     k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    barrier = cv2.dilate(barrier, k3, iterations=1)
+    # Dilate more to bridge door-sized gaps between partitions
+    barrier = cv2.dilate(barrier, k3, iterations=2)
     # Seal outer frame so exterior doesn't flood into rooms
-    cv2.rectangle(barrier, (0, 0), (rw - 1, rh - 1), 255, max(2, thick))
+    cv2.rectangle(barrier, (0, 0), (rw - 1, rh - 1), 255, max(3, thick + 1))
     free = cv2.bitwise_not(barrier)
     free = cv2.morphologyEx(free, cv2.MORPH_OPEN, k3, iterations=1)
     n, lab, st, _ = cv2.connectedComponentsWithStats(free, connectivity=4)
@@ -3940,7 +4210,7 @@ def _rooms_from_wall_barriers(
     rooms: list[dict[str, Any]] = []
     for i in selected:
         mask = (lab == i).astype(np.uint8) * 255
-        poly = _ortho_polygon_from_mask(mask, max_verts=12)
+        poly = _ortho_polygon_from_mask(mask, max_verts=16)
         if poly is None or len(poly) < 4:
             continue
         verts = []
@@ -3989,21 +4259,31 @@ def _prefer_finer_rooms(
     br_areas = sorted((_area(r) for r in barrier_rooms), reverse=True)
     mega_ex = sum(1 for a in ex_areas if a >= 20.0)
     mega_br = sum(1 for a in br_areas if a >= 20.0)
+
+    def _nverts(r: dict[str, Any]) -> int:
+        return len(r.get("vertices") or [])
+
+    non_aabb_br = sum(1 for r in barrier_rooms if _nverts(r) >= 6)
+    non_aabb_ex = sum(1 for r in existing if _nverts(r) >= 6)
     # Reject barrier set if it under-segments into a few mega floods
+    # (keep if those few faces are clearly non-AABB L/T wall-graph rooms)
     if len(barrier_rooms) <= 3 and mega_br >= max(1, len(barrier_rooms) - 1):
-        notes.append(
-            f"牆屏障房間過粗（{len(barrier_rooms)} mega），保留既有 {len(existing)}。"
-        )
-        return existing, notes
-    # Barrier wins when finer split of mega AABBs
-    if len(barrier_rooms) >= 5 and (
-        (mega_ex >= 2 and mega_br < mega_ex)
-        or (ex_areas and ex_areas[0] >= 28.0 and br_areas and br_areas[0] < ex_areas[0] * 0.75)
-        or (len(barrier_rooms) >= len(existing) + 1 and mega_br <= mega_ex)
+        if non_aabb_br < 1:
+            notes.append(
+                f"牆屏障房間過粗（{len(barrier_rooms)} mega），保留既有 {len(existing)}。"
+            )
+            return existing, notes
+    # Barrier wins when finer split OR more non-AABB (L-shaped wall faces)
+    if len(barrier_rooms) >= 3 and (
+        (mega_ex >= 1 and mega_br < mega_ex)
+        or (ex_areas and ex_areas[0] >= 22.0 and br_areas and br_areas[0] < ex_areas[0] * 0.80)
+        or (len(barrier_rooms) >= max(4, len(existing)) and mega_br <= mega_ex)
+        or (non_aabb_br >= 1 and non_aabb_br >= non_aabb_ex and len(barrier_rooms) >= 4)
+        or (non_aabb_br >= 2 and mega_br <= mega_ex + 1)
     ):
         notes.append(
-            f"房間改採牆約束分割 {len(existing)}→{len(barrier_rooms)}"
-            f"（拆大開放 AABB／臥衛分間）。"
+            f"房間改採牆圖分割 {len(existing)}→{len(barrier_rooms)}"
+            f"（非 AABB／L 形牆面；拆大開放盒）。"
         )
         return barrier_rooms, notes
     # Hybrid: start from existing, replace mega with barrier cells that overlap them
@@ -4100,7 +4380,7 @@ def _constrain_rooms_by_walls(
     if rw * rh > 4_000_000:
         return rooms, notes
     barrier = np.zeros((rh, rw), np.uint8)
-    thick = max(2, int(round(0.08 / mpp)))
+    thick = max(3, int(round(0.18 / mpp)))
 
     def _m_to_r(x: float, y: float) -> tuple[int, int]:
         px = int(round((x - min_x) / mpp))
@@ -4112,7 +4392,8 @@ def _constrain_rooms_by_walls(
         p1 = _m_to_r(w["a"]["x"], w["a"]["y"])
         p2 = _m_to_r(w["b"]["x"], w["b"]["y"])
         cv2.line(barrier, p1, p2, 255, thick)
-    # No extra dilate — thick walls already seal; dilate was over-shrinking CAD rooms
+    k3c = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    barrier = cv2.dilate(barrier, k3c, iterations=1)  # seal door gaps for faces
     free = cv2.bitwise_not(barrier)
     if content_roi is not None:
         # optional: zero outside ROI in raster — skip for simplicity
@@ -4152,9 +4433,9 @@ def _constrain_rooms_by_walls(
             out.append(r)
             continue
         mask = (lab == label).astype(np.uint8) * 255
-        # Clip mask to lightly expanded room AABB (avoid re-inflating splits)
+        # Expand enough for L/T wall-faces that stick out of coarse AABB
         x0, y0, x1, y1 = box
-        exp = 0.22
+        exp = 0.55
         rx0, ry0 = _m_to_r(x0 - exp, y1 + exp)
         rx1, ry1 = _m_to_r(x1 + exp, y0 - exp)
         rx0, rx1 = max(0, min(rx0, rx1)), min(rw, max(rx0, rx1))
@@ -4164,7 +4445,7 @@ def _constrain_rooms_by_walls(
         if cv2.countNonZero(clip) < 40:
             out.append(r)
             continue
-        poly = _ortho_polygon_from_mask(clip, max_verts=12)
+        poly = _ortho_polygon_from_mask(clip, max_verts=16)
         if poly is None or len(poly) < 4:
             out.append(r)
             continue
@@ -4180,16 +4461,19 @@ def _constrain_rooms_by_walls(
         nxs = [v["x"] for v in verts]
         nys = [v["y"] for v in verts]
         n_area = max(0.0, (max(nxs) - min(nxs)) * (max(nys) - min(nys)))
-        if n_area > o_area * 1.20 or n_area < o_area * 0.65:
+        # Allow L/T orthos that shrink AABB fill (non-AABB wall faces)
+        if n_area > o_area * 1.35 or n_area < o_area * 0.40:
             out.append(r)
             continue
         nr = dict(r)
         nr["vertices"] = verts
-        nr["confidence"] = min(0.72, float(r.get("confidence") or 0.55) + 0.08)
+        nr["confidence"] = min(0.74, float(r.get("confidence") or 0.55) + 0.10)
         out.append(nr)
         improved += 1
     if improved:
-        notes.append(f"房間多邊形以牆段屏障約束 {improved}/{len(rooms)}（ortho clip）。")
+        notes.append(
+            f"房間多邊形以牆圖約束 {improved}/{len(rooms)}（非 AABB／L 形 ortho）。"
+        )
     return out, notes
 
 
@@ -4329,7 +4613,7 @@ def run_yolo_detect(
                             raw_mask, (w, h), interpolation=cv2.INTER_LINEAR
                         )
                     room_poly = _ortho_polygon_from_mask(
-                        (raw_mask > 0.5).astype(np.uint8) * 255, max_verts=10
+                        (raw_mask > 0.5).astype(np.uint8) * 255, max_verts=16
                     )
                 if room_poly is None:
                     room_poly = poly
@@ -4619,6 +4903,31 @@ def run_yolo_detect(
         notes.append(
             f"最終重申外周界 ring {len(ring2)} 段（{'閉合' if ring2_closed else '未閉合'}）。"
         )
+    # Supplement interior partitions from thick-wall medial H/V runs
+    try:
+        ink_m = _thick_wall_ink_mask(bgr, foot_final, plan_style=plan_style)
+        medial_m, _ = _medial_axis_mask(ink_m)
+        med_walls = _hv_runs_from_medial(
+            medial_m, height_px=h, mpp=mpp, min_run_px=max(24, int(min(h, w) * 0.04)),
+            prefix="w-med",
+        )
+        if med_walls:
+            ring_now = [w for w in walls if "ring" in str(w.get("id", ""))]
+            med_walls = _drop_walls_overlapping_ring(med_walls, ring_now, dist_tol_m=0.50)
+            med_walls, _ = _merge_collinear_walls(
+                med_walls, min_len_m=0.70, gap_tol_m=0.85, axis_tol_m=0.20
+            )
+            # Keep longer medial interiors only; cap to avoid CAD ΣL inflation
+            med_walls = [w for w in med_walls if _seg_length_m(w) >= 1.15]
+            med_walls = sorted(med_walls, key=_seg_length_m, reverse=True)[:8]
+            before = len(walls)
+            walls = walls + med_walls
+            walls = _dedupe_parallel_walls(walls, axis_tol_m=0.32, overlap_slack_m=0.30)
+            added = max(0, len(walls) - before)
+            if added > 0:
+                notes.append(f"厚牆中心線內隔間併入 {added} 段（medial H/V）。")
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"medial 內隔間略過：{e}")
     # Drop furniture-risk interior ink (esp. marketing 2b ΣL inflation)
     max_int = 16 if plan_style == "marketing" else 20
     walls, furn_notes = _filter_furniture_risk_walls(
@@ -4643,7 +4952,7 @@ def run_yolo_detect(
     notes.extend(room_wall_notes)
     # Finer rooms from wall free-space cells (when barriers close)
     barrier_rooms, br_notes = _rooms_from_wall_barriers(
-        walls, mpp=mpp, height_px=h, max_rooms=10, min_area_m2=2.0
+        walls, mpp=mpp, height_px=h, max_rooms=12, min_area_m2=1.6
     )
     notes.extend(br_notes)
     rooms, pref_notes = _prefer_finer_rooms(rooms, barrier_rooms)
