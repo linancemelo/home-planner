@@ -270,16 +270,16 @@ def extract_from_cubicasa(
 
     door_segs = _mask_to_opening_segments(door, height_px=h, mpp=mpp, min_area=35)
     win_segs = _mask_to_opening_segments(window, height_px=h, mpp=mpp, min_area=40)
-    # Geometric priors: doors ~0.55–1.35 m, windows ~0.7–3.0 m
+    # Geometric priors: doors ~0.6–1.3 m, windows ~0.7–3.0 m
     doors_f = []
     for a, b, _area in door_segs:
         L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-        if 0.5 <= L <= 1.5:
+        if 0.6 <= L <= 1.3:
             doors_f.append((a, b))
     wins_f = []
     for a, b, _area in win_segs:
         L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-        if 0.65 <= L <= 3.2:
+        if 0.7 <= L <= 3.0:
             wins_f.append((a, b))
     notes.append(
         f"CubiCasa 開口（幾何過濾後）：門 {len(doors_f)}、窗 {len(wins_f)}。"
