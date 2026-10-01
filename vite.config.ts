@@ -1,19 +1,10 @@
-import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
-// 單檔 HTML 封裝（選用，v1 預設關閉）：
-//   npm i -D vite-plugin-singlefile
-//   import { viteSingleFile } from "vite-plugin-singlefile"
-// 然後把 viteSingleFile() 加進 plugins。偵測管線沒有後端，適合日後收成單一 HTML。
 
 export default defineConfig({
-  // GitHub 專案 Pages：https://<user>.github.io/home-planner/
+  // GitHub project Pages: https://<user>.github.io/home-planner/
   base: "/home-planner/",
-  plugins: [
-    react(),
-    tailwindcss(),
-    // viteSingleFile(),
-  ],
+  plugins: [react()],
   server: {
     host: "127.0.0.1",
     port: 43123,
