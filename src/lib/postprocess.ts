@@ -362,7 +362,11 @@ function projectAndExcavate(
       const overlap = Math.min(t1, len) - Math.max(t0, 0)
       const openingLen = dist(openingA, openingB)
       if (overlap < openingLen * 0.5) continue
-      if (!best || d < best.dist) {
+      const better =
+        !best ||
+        overlap > best.overlap + 0.04 ||
+        (Math.abs(overlap - best.overlap) <= 0.04 && d < best.dist)
+      if (better) {
         const dir = norm(sub(wall.b, wall.a))
         best = {
           wallIndex: i,
@@ -427,6 +431,7 @@ function projectAndExcavate(
     const intervals = mergeIntervals(buckets[wallIndex])
     let cursor = 0
     const at = (t: number) => add(wall.a, mul(dir, t))
+    const stubs: { a: Vec2; b: Vec2 }[] = []
     for (const interval of intervals) {
       if (interval.t0 - cursor >= MIN_SEGMENT_LENGTH_M) {
         const pieceIndex = pieces.length
@@ -439,7 +444,7 @@ function projectAndExcavate(
         })
         pieceByParent[wallIndex].push(pieceIndex)
       } else if (interval.t0 - cursor > 0.02) {
-        notes.push("挖除開口後剩下短於 0.3 m 的牆段，已當雜訊刪除。")
+        stubs.push({ a: at(cursor), b: at(interval.t0) })
       }
       excavations.push({
         a: roundVec(at(interval.t0)),
@@ -459,10 +464,21 @@ function projectAndExcavate(
       })
       pieceByParent[wallIndex].push(pieceIndex)
     } else if (len - cursor > 0.02 && intervals.length > 0) {
-      notes.push("挖除開口後剩下短於 0.3 m 的牆段，已當雜訊刪除。")
+      stubs.push({ a: at(cursor), b: at(len) })
     }
-    if (intervals.length === 0 && len >= MIN_SEGMENT_LENGTH_M) {
-      // already pushed above via len - cursor
+    if (pieceByParent[wallIndex].length === 0 && stubs.length > 0) {
+      const stub = stubs.reduce((best, item) => (dist(item.a, item.b) > dist(best.a, best.b) ? item : best))
+      const pieceIndex = pieces.length
+      pieces.push({
+        a: stub.a,
+        b: stub.b,
+        thicknessM: wall.thicknessM,
+        thicknessAssumed: true,
+        parent: wallIndex,
+      })
+      pieceByParent[wallIndex].push(pieceIndex)
+    } else if (stubs.length > 0) {
+      notes.push("挖除開口後剩下短於 0.3 m 的牆段，已當雜訊刪除。")
     }
   })
 

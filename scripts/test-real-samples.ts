@@ -12,27 +12,34 @@ const cases: {
   longestM: number
   swingAtLeast?: number
   windowAtLeast?: number
+  slidingAtLeast?: number
   maxXFraction?: number
 }[] = [
   {
     file: "marketing-591.jpg",
     notes: ["未採信", "近黑結構線", "實心牆"],
-    range: { walls: [12, 45], doors: [0, 4], windows: [0, 4] },
-    longestM: 2.5,
+    range: { walls: [12, 40], doors: [3, 14], windows: [2, 6] },
+    longestM: 4,
+    swingAtLeast: 3,
+    windowAtLeast: 2,
   },
   {
+    // 上方外牆 y≈160 有兩段缺口（約 x 587–682、804–920），牆墨是斷的，
+    // 但缺口裡只有淺灰鋪面，沒有錯開的兩條短線，也沒有門扇加四分之一圓弧。
+    // 當成拉門或平開會是猜。所以門的下限是 0，不要求拉門。
     file: "furnished-en.jpg",
     notes: ["未採信", "近黑結構線", "疑似平開門但特徵不足"],
-    range: { walls: [8, 36], doors: [0, 6], windows: [0, 6] },
-    longestM: 4,
+    range: { walls: [8, 36], doors: [0, 3], windows: [2, 6] },
+    longestM: 3.5,
+    windowAtLeast: 2,
   },
   {
     file: "interior-design-cad.jpg",
     notes: ["未採信", "標題欄", "指北針", "疑似平開門但特徵不足"],
-    range: { walls: [10, 40], doors: [1, 8], windows: [1, 8] },
+    range: { walls: [10, 40], doors: [3, 12], windows: [2, 6] },
     longestM: 4,
-    swingAtLeast: 1,
-    windowAtLeast: 1,
+    swingAtLeast: 3,
+    windowAtLeast: 2,
     maxXFraction: 0.78,
   },
 ]
@@ -84,6 +91,10 @@ for (const item of cases) {
   }
   if (item.swingAtLeast) assert(swings.length >= item.swingAtLeast, `${item.file} swing doors`)
   if (item.windowAtLeast) assert(plan.windows.length >= item.windowAtLeast, `${item.file} windows`)
+  if (item.slidingAtLeast) {
+    const sliding = plan.doors.filter((d) => d.kind === "sliding")
+    assert(sliding.length >= item.slidingAtLeast, `${item.file} sliding doors`)
+  }
   if (item.maxXFraction) {
     const maxX = Math.max(...plan.walls.flatMap((w) => [w.a.x, w.b.x]))
     const frac = maxX / (plan.meta.imageWidthPx * plan.meta.metersPerPixel)

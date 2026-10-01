@@ -8,15 +8,76 @@ import {
   DEFAULT_CEILING_HEIGHT_M,
   DEFAULT_WALL_THICKNESS_M,
 } from "../units.ts"
-import { evaluateDoor } from "./doors.ts"
-import { detectWallFragments, findPixelGaps } from "./walls.ts"
-import { evaluateWindow } from "./windows.ts"
+import { evaluateDoor, findSlidingsOnWalls, findSwingsOnWalls } from "./doors.ts"
+import { doorStrokes, thinStrokes } from "./strokes.ts"
+import { detectWallFragments, findPixelGaps, type WallFragment } from "./walls.ts"
+import { evaluateWindow, findWindowsOnWalls } from "./windows.ts"
 
 export type PipelineResult = {
   floorplan: Floorplan
   excavations: Excavation[]
   binary: { width: number; height: number; ink: Uint8Array }
   diagnostics: string[]
+}
+
+/** 共線牆段合成一條搜尋線，讓跨在缺口上的拉門與窗還看得到整道牆。 */
+function colinearSearchLines(fragments: WallFragment[]): WallFragment[] {
+  const used = new Array(fragments.length).fill(false)
+  const out: WallFragment[] = []
+  for (let i = 0; i < fragments.length; i++) {
+    if (used[i]) continue
+    const base = fragments[i]
+    const dx = base.b.x - base.a.x
+    const dy = base.b.y - base.a.y
+    const len = Math.hypot(dx, dy) || 1
+    const dirX = dx / len
+    const dirY = dy / len
+    const nx = -dirY
+    const ny = dirX
+    let t0 = 0
+    let t1 = len
+    let thick = base.thicknessPx
+    used[i] = true
+    let changed = true
+    while (changed) {
+      changed = false
+      for (let j = 0; j < fragments.length; j++) {
+        if (used[j]) continue
+        const frag = fragments[j]
+        const fx = frag.b.x - frag.a.x
+        const fy = frag.b.y - frag.a.y
+        const fl = Math.hypot(fx, fy) || 1
+        if (Math.abs(dirX * fy - dirY * fx) / fl > 0.12) continue
+        const perpA = Math.abs((frag.a.x - base.a.x) * nx + (frag.a.y - base.a.y) * ny)
+        const perpB = Math.abs((frag.b.x - base.a.x) * nx + (frag.b.y - base.a.y) * ny)
+        if (perpA > 5 || perpB > 5) continue
+        const p0 = (frag.a.x - base.a.x) * dirX + (frag.a.y - base.a.y) * dirY
+        const p1 = (frag.b.x - base.a.x) * dirX + (frag.b.y - base.a.y) * dirY
+        const lo = Math.min(p0, p1)
+        const hi = Math.max(p0, p1)
+        if (lo > t1 + 180 || hi < t0 - 180) continue
+        t0 = Math.min(t0, lo)
+        t1 = Math.max(t1, hi)
+        thick = Math.max(thick, frag.thicknessPx)
+        used[j] = true
+        changed = true
+      }
+    }
+    out.push({
+      a: { x: base.a.x + dirX * t0, y: base.a.y + dirY * t0 },
+      b: { x: base.a.x + dirX * t1, y: base.a.y + dirY * t1 },
+      thicknessPx: thick,
+      kind: base.kind,
+    })
+  }
+  return out
+}
+
+function openingClash(a: Vec2, b: Vec2, c: Vec2, d: Vec2): boolean {
+  const mid1 = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+  const mid2 = { x: (c.x + d.x) / 2, y: (c.y + d.y) / 2 }
+  const len = Math.min(dist(a, b), dist(c, d))
+  return dist(mid1, mid2) < Math.max(12, len * 0.5)
 }
 
 const SCALE_NOTE =
@@ -35,6 +96,12 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
   const walls = detectWallFragments(pre.lines, pre.raw, pre.cleaned, pre.width, pre.height)
   diagnostics.push(...walls.diagnostics)
 
+  const strokes = thinStrokes(pre.gray, pre.width, pre.height)
+  const openingInk = pre.cleaned.slice()
+  for (let i = 0; i < openingInk.length; i++) {
+    if (strokes[i]) openingInk[i] = 1
+  }
+
   const gaps = findPixelGaps(walls.fragments, walls.metersPerPixel, walls.illustrative)
   diagnostics.push(`共線缺口 ${gaps.length} 處。`)
 
@@ -51,8 +118,12 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
   }[] = []
   const pxWindows: { openingA: Vec2; openingB: Vec2; confidence: number }[] = []
 
+  const clashes = (a: Vec2, b: Vec2) =>
+    pxDoors.some((door) => openingClash(a, b, door.openingA, door.openingB)) ||
+    pxWindows.some((win) => openingClash(a, b, win.openingA, win.openingB))
+
   for (const gap of gaps) {
-    const door = evaluateDoor(pre.cleaned, pre.width, pre.height, gap, walls.metersPerPixel)
+    const door = evaluateDoor(openingInk, pre.width, pre.height, gap, walls.metersPerPixel)
     if (door.status === "swing") {
       pxDoors.push({
         kind: "swing",
@@ -76,7 +147,7 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
       continue
     }
 
-    const win = evaluateWindow(pre.cleaned, pre.width, pre.height, gap, walls.metersPerPixel)
+    const win = evaluateWindow(openingInk, pre.width, pre.height, gap, walls.metersPerPixel)
     if (win.status === "window") {
       pxWindows.push({ openingA: gap.a, openingB: gap.b, confidence: win.confidence })
       continue
@@ -88,6 +159,59 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
     if (win.status === "insufficient") pxNotes.push("疑似窗戶但平行線不足，已略過。")
     else if (win.status === "extends-outside") pxNotes.push("疑似窗戶但線段超出牆外，已略過。")
     else if (win.status === "closed-rect") pxNotes.push("疑似窗戶但形狀像封閉小矩形，已略過。")
+  }
+
+  const swingInk = doorStrokes(pre.gray, pre.width, pre.height)
+  for (let i = 0; i < swingInk.length; i++) {
+    if (pre.cleaned[i] && !pre.thick[i]) swingInk[i] = 1
+  }
+  const searchLines = colinearSearchLines(walls.fragments)
+
+  for (const swing of findSwingsOnWalls(
+    swingInk,
+    pre.width,
+    pre.height,
+    searchLines,
+    walls.metersPerPixel,
+  )) {
+    if (clashes(swing.openingA, swing.openingB)) continue
+    pxDoors.push({
+      kind: "swing",
+      openingA: swing.openingA,
+      openingB: swing.openingB,
+      hinge: swing.hinge,
+      leafTip: swing.leafTip,
+      leafLengthPx: swing.leafLengthPx,
+      confidence: swing.confidence,
+    })
+  }
+  for (const slide of findSlidingsOnWalls(
+    openingInk,
+    pre.width,
+    pre.height,
+    searchLines,
+    walls.metersPerPixel,
+  )) {
+    if (clashes(slide.openingA, slide.openingB)) continue
+    pxDoors.push({
+      kind: "sliding",
+      openingA: slide.openingA,
+      openingB: slide.openingB,
+      sliding: slide,
+      confidence: slide.confidence,
+    })
+  }
+  for (const win of findWindowsOnWalls(
+    openingInk,
+    pre.gray,
+    pre.cleaned,
+    pre.width,
+    pre.height,
+    searchLines,
+    walls.metersPerPixel,
+  )) {
+    if (clashes(win.openingA, win.openingB)) continue
+    pxWindows.push(win)
   }
 
   diagnostics.push(`平開／拉門 ${pxDoors.length}，窗 ${pxWindows.length}。`)

@@ -1,7 +1,8 @@
-import { dist } from "../geometry.ts"
+import type { Vec2 } from "../../types/floorplan.ts"
+import { dist, norm, sub } from "../geometry.ts"
 import { inkNear } from "../ink.ts"
-import type { PixelGap } from "./walls.ts"
-import { overlapRatio, parallelRuns, type ParallelRun } from "./runs.ts"
+import { overlapRatio, parallelRuns, parallelSegments, type ParallelRun } from "./runs.ts"
+import type { PixelGap, WallFragment } from "./walls.ts"
 
 export type WindowEval =
   | { status: "none" }
@@ -61,6 +62,178 @@ export function evaluateWindow(
   const span = Math.min(pair[0].t1, pair[1].t1) - Math.max(pair[0].t0, pair[1].t0)
   const confidence = Math.round(Math.min(0.88, 0.5 + (span / openingPx) * 0.3) * 100) / 100
   return { status: "window", confidence }
+}
+
+export type PlacedWindow = { openingA: Vec2; openingB: Vec2; confidence: number }
+
+/** 牆帶裡、短於整道牆的兩或三條對齊細線。三條平行線優先，避免把家具矩形當窗。 */
+export function findWindowsOnWalls(
+  ink: Uint8Array,
+  gray: Uint8Array,
+  cleaned: Uint8Array,
+  width: number,
+  height: number,
+  fragments: WallFragment[],
+  mpp: number,
+): PlacedWindow[] {
+  const minLen = Math.max(22, 0.42 / mpp)
+  const maxLen = Math.min(280, 2.9 / mpp)
+  const found: PlacedWindow[] = []
+  for (const frag of fragments) {
+    const dx = Math.abs(frag.b.x - frag.a.x)
+    const dy = Math.abs(frag.b.y - frag.a.y)
+    if (!(dx < 4 || dy < 4 || (dx > 0 && dy / dx < 0.12) || (dy > 0 && dx / dy < 0.12))) continue
+    const len = dist(frag.a, frag.b)
+    if (len < minLen) continue
+    const dir = norm(sub(frag.b, frag.a))
+    const band = Math.max(frag.thicknessPx * 0.85, 9)
+    const runs = parallelSegments(ink, width, height, frag.a, frag.b, band, minLen * 0.55)
+    for (let i = 0; i < runs.length; i++) {
+      for (let j = i + 1; j < runs.length; j++) {
+        const a = runs[i]
+        const b = runs[j]
+        const sep = Math.abs(a.offset - b.offset)
+        if (sep < 2 || sep > 9) continue
+        if (overlapRatio(a, b) < 0.8) continue
+        const faceSep = sep > Math.min(6.5, Math.max(4, frag.thicknessPx * 0.48))
+        const span0 = Math.max(a.t0, b.t0)
+        const span1 = Math.min(a.t1, b.t1)
+        const span = span1 - span0
+        if (span < minLen || span > maxLen) continue
+        if (span > len * 0.86) continue
+        const midOff = (a.offset + b.offset) / 2
+        if (Math.abs(midOff) > Math.max(frag.thicknessPx * 0.62, 7)) continue
+        let lines = 2
+        const lo = Math.min(a.offset, b.offset)
+        const hi = Math.max(a.offset, b.offset)
+        for (let k = 0; k < runs.length; k++) {
+          if (k === i || k === j) continue
+          const c = runs[k]
+          if (c.offset <= lo + 1.5 || c.offset >= hi - 1.5) continue
+          if (overlapRatio(c, a) < 0.75 || overlapRatio(c, b) < 0.75) continue
+          lines = 3
+          break
+        }
+        if (lines < 3 && faceSep) continue
+        const gap: PixelGap = {
+          a: { x: frag.a.x + dir.x * span0, y: frag.a.y + dir.y * span0 },
+          b: { x: frag.a.x + dir.x * span1, y: frag.a.y + dir.y * span1 },
+          thicknessPx: frag.thicknessPx,
+        }
+        if (lines < 3 && closedRectangle(ink, width, height, gap, a, b, span, mpp)) continue
+        const inWall = windowSitsInWall(gray, cleaned, width, height, frag, span0, span1)
+        const exterior = facesExterior(gray, width, height, frag, span0, span1)
+        const short = span <= Math.max(52, 0.95 / mpp) && span < len * 0.4
+        if (!inWall && !(exterior && lines >= 3 && short)) continue
+        found.push({
+          openingA: gap.a,
+          openingB: gap.b,
+          confidence: lines >= 3 ? 0.8 : 0.66,
+        })
+      }
+    }
+  }
+  const ranked = [...found].sort((a, b) => b.confidence - a.confidence || dist(b.openingA, b.openingB) - dist(a.openingA, a.openingB))
+  const kept: PlacedWindow[] = []
+  for (const hit of ranked) {
+    const mid = { x: (hit.openingA.x + hit.openingB.x) / 2, y: (hit.openingA.y + hit.openingB.y) / 2 }
+    const len = dist(hit.openingA, hit.openingB)
+    const clash = kept.some((other) => {
+      const mid2 = { x: (other.openingA.x + other.openingB.x) / 2, y: (other.openingA.y + other.openingB.y) / 2 }
+      return dist(mid, mid2) < Math.max(12, len * 0.45)
+    })
+    if (!clash) kept.push(hit)
+  }
+  return kept
+}
+
+/** 牆的一側是空白（戶外或陽台），另一側不是。外牆上的短平行線比室內家具更像窗。 */
+function facesExterior(
+  gray: Uint8Array,
+  width: number,
+  height: number,
+  frag: WallFragment,
+  span0: number,
+  span1: number,
+): boolean {
+  const dx = frag.b.x - frag.a.x
+  const dy = frag.b.y - frag.a.y
+  const len = Math.hypot(dx, dy) || 1
+  const dirX = dx / len
+  const dirY = dy / len
+  const nx = -dirY
+  const ny = dirX
+  const distOff = Math.max(frag.thicknessPx, 8) + 14
+  const t = (span0 + span1) / 2
+  const sample = (sign: number) => {
+    let sum = 0
+    let n = 0
+    for (let dt = -12; dt <= 12; dt += 6) {
+      const x = Math.round(frag.a.x + dirX * (t + dt) + nx * distOff * sign)
+      const y = Math.round(frag.a.y + dirY * (t + dt) + ny * distOff * sign)
+      if (x < 0 || y < 0 || x >= width || y >= height) continue
+      sum += gray[y * width + x]
+      n++
+    }
+    return n === 0 ? 128 : sum / n
+  }
+  const plus = sample(1)
+  const minus = sample(-1)
+  return Math.abs(plus - minus) > 45 && Math.max(plus, minus) > 175
+}
+
+/** 細線要在實心牆的淺色凹槽裡，或在雙線牆的空腔裡。貼在牆外的家具平行線不算窗。 */
+function windowSitsInWall(
+  gray: Uint8Array,
+  cleaned: Uint8Array,
+  width: number,
+  height: number,
+  frag: WallFragment,
+  span0: number,
+  span1: number,
+): boolean {
+  const dx = frag.b.x - frag.a.x
+  const dy = frag.b.y - frag.a.y
+  const len = Math.hypot(dx, dy) || 1
+  const dirX = dx / len
+  const dirY = dy / len
+  const nx = -dirY
+  const ny = dirX
+  const thick = Math.max(frag.thicknessPx, 6)
+  let grooves = 0
+  let hollow = 0
+  const stations = 5
+  for (let s = 1; s <= stations; s++) {
+    const t = span0 + ((span1 - span0) * s) / (stations + 1)
+    const cx = frag.a.x + dirX * t
+    const cy = frag.a.y + dirY * t
+    let light = false
+    let interiorInk = 0
+    let interiorN = 0
+    let faceInk = 0
+    let faceN = 0
+    const half = thick / 2
+    for (let off = -half; off <= half; off += 1) {
+      const x = Math.round(cx + nx * off)
+      const y = Math.round(cy + ny * off)
+      if (x < 1 || y < 1 || x >= width - 1 || y >= height - 1) continue
+      const g = gray[y * width + x]
+      const on = cleaned[y * width + x] === 1
+      if (Math.abs(off) >= half - 1.6) {
+        faceN++
+        if (on || g < 72) faceInk++
+      } else {
+        interiorN++
+        if (on) interiorInk++
+        const g0 = gray[Math.round(cy + ny * (off - 2)) * width + Math.round(cx + nx * (off - 2))] ?? 255
+        const g1 = gray[Math.round(cy + ny * (off + 2)) * width + Math.round(cx + nx * (off + 2))] ?? 255
+        if (g >= 88 && g0 < 90 && g1 < 90 && g > g0 + 20 && g > g1 + 20) light = true
+      }
+    }
+    if (light) grooves++
+    if (faceN > 0 && interiorN > 0 && faceInk / faceN >= 0.4 && interiorInk / interiorN <= 0.5) hollow++
+  }
+  return grooves >= 1 || hollow >= 2
 }
 
 function closedRectangle(

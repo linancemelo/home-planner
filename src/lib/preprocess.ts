@@ -11,6 +11,8 @@ export type PreprocessResult = {
   thick: Uint8Array
   /** cleaned 去掉實心粗牆，給雙線偵測。 */
   lines: Uint8Array
+  /** 與二值化相同方向的灰階，給門窗的灰色筆畫。 */
+  gray: Uint8Array
   notes: string[]
 }
 
@@ -73,7 +75,7 @@ export function preprocess(image: ImageSource): PreprocessResult {
     if (thick[i]) lines[i] = 0
   }
 
-  return { width, height, cleaned: ink, raw, thick, lines, notes }
+  return { width, height, cleaned: ink, raw, thick, lines, gray, notes }
 }
 
 function highContrast(hist: Uint32Array): boolean {
