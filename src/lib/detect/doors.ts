@@ -521,6 +521,185 @@ export function findSlidingsOnWalls(
   return suppressByMidpoint(found)
 }
 
+/**
+ * 牆已經斷開、開口約 1 m 以上、沒有平開圓弧。
+ * 缺口上下（或左右）各有一條橫貫細線，中間是灰玻璃時，記成拉門，兩扇沿開口錯開。
+ */
+export function findOpeningSliders(
+  gray: Uint8Array,
+  width: number,
+  height: number,
+  gaps: PixelGap[],
+  mpp: number,
+  arcInk: Uint8Array,
+): PlacedSliding[] {
+  const found: PlacedSliding[] = []
+  for (const gap of gaps) {
+    const length = dist(gap.a, gap.b)
+    const meters = length * mpp
+    if (meters < 0.95 || meters > 2.6) continue
+    const swing = evaluateSwing(arcInk, width, height, gap, length)
+    if (swing.status === "swing") continue
+    const dir = norm(sub(gap.b, gap.a))
+    const normal = { x: -dir.y, y: dir.x }
+    const band = Math.round(Math.max(gap.thicknessPx * 0.95, 8))
+    const hits: { offset: number; cover: number }[] = []
+    for (let off = -band; off <= band; off++) {
+      const cover = railCover(gray, width, height, gap.a, dir, normal, length, off)
+      if (cover >= 0.34) hits.push({ offset: off, cover })
+    }
+    const rails = clusterRails(hits)
+    let pair: [{ offset: number; cover: number }, { offset: number; cover: number }] | null = null
+    for (let i = 0; i < rails.length; i++) {
+      for (let j = i + 1; j < rails.length; j++) {
+        const sep = Math.abs(rails[i].offset - rails[j].offset)
+        if (sep < 6 || sep > 16) continue
+        if (Math.max(rails[i].cover, rails[j].cover) < 0.7) continue
+        if (Math.min(rails[i].cover, rails[j].cover) < 0.34) continue
+        const mid = (rails[i].offset + rails[j].offset) / 2
+        if (Math.abs(mid) > Math.max(gap.thicknessPx * 0.5, 5)) continue
+        if (!pair || rails[i].cover + rails[j].cover > pair[0].cover + pair[1].cover) {
+          pair = [rails[i], rails[j]]
+        }
+      }
+    }
+    if (!pair) continue
+    const lo = Math.min(pair[0].offset, pair[1].offset)
+    const hi = Math.max(pair[0].offset, pair[1].offset)
+    const glass = glassMedian(gray, width, height, gap.a, dir, normal, length, lo, hi)
+    if (glass < 75 || glass > 185) continue
+    const at = (offset: number, t0: number, t1: number) => ({
+      a: {
+        x: gap.a.x + dir.x * t0 + normal.x * offset,
+        y: gap.a.y + dir.y * t0 + normal.y * offset,
+      },
+      b: {
+        x: gap.a.x + dir.x * t1 + normal.x * offset,
+        y: gap.a.y + dir.y * t1 + normal.y * offset,
+      },
+    })
+    found.push({
+      status: "sliding",
+      openingA: gap.a,
+      openingB: gap.b,
+      leafA: at(pair[0].offset, length * 0.02, length * 0.56),
+      leafB: at(pair[1].offset, length * 0.44, length * 0.98),
+      confidence: 0.7,
+    })
+  }
+  return found
+}
+
+/** 牆已經有缺口時，才在淺灰筆畫上找門扇加圓弧。兩者缺一就不收。 */
+export function findFaintGapSwings(
+  ink: Uint8Array,
+  width: number,
+  height: number,
+  gaps: PixelGap[],
+  fragments: WallFragment[],
+  mpp: number,
+): PlacedSwing[] {
+  const found: PlacedSwing[] = []
+  const none: WallFragment = { a: { x: -1, y: -1 }, b: { x: -2, y: -1 }, thicknessPx: 1, kind: "solid" }
+  for (const gap of gaps) {
+    const length = dist(gap.a, gap.b)
+    const meters = length * mpp
+    if (meters < 0.55 || meters > 0.95) continue
+    const hit = evaluateSwing(ink, width, height, gap, length)
+    if (hit.status !== "swing") continue
+    if (circleFill(ink, width, height, hit.hinge, length) > 0.56) continue
+    if (leafLiesOnWall(hit.hinge, hit.leafTip, fragments, none)) continue
+    found.push({ ...hit, openingA: gap.a, openingB: gap.b })
+  }
+  return found
+}
+
+function railCover(
+  gray: Uint8Array,
+  width: number,
+  height: number,
+  origin: Vec2,
+  dir: Vec2,
+  normal: Vec2,
+  length: number,
+  offset: number,
+): number {
+  let hit = 0
+  let n = 0
+  for (let t = length * 0.06; t < length * 0.94; t += 2) {
+    const x = origin.x + dir.x * t + normal.x * offset
+    const y = origin.y + dir.y * t + normal.y * offset
+    n++
+    if (railPixel(gray, width, height, x, y, normal)) hit++
+  }
+  return n === 0 ? 0 : hit / n
+}
+
+function railPixel(
+  gray: Uint8Array,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  normal: Vec2,
+): boolean {
+  const g = sampleGray(gray, width, height, x, y)
+  const g1 = sampleGray(gray, width, height, x + normal.x * 2, y + normal.y * 2)
+  const g2 = sampleGray(gray, width, height, x - normal.x * 2, y - normal.y * 2)
+  return g <= 176 && g1 >= g + 16 && g2 >= g + 16
+}
+
+function glassMedian(
+  gray: Uint8Array,
+  width: number,
+  height: number,
+  origin: Vec2,
+  dir: Vec2,
+  normal: Vec2,
+  length: number,
+  lo: number,
+  hi: number,
+): number {
+  const values: number[] = []
+  const inner0 = lo + 2
+  const inner1 = hi - 2
+  if (inner1 <= inner0) return 255
+  for (let t = length * 0.15; t < length * 0.85; t += 3) {
+    for (let off = inner0; off <= inner1; off += 1) {
+      const x = origin.x + dir.x * t + normal.x * off
+      const y = origin.y + dir.y * t + normal.y * off
+      values.push(sampleGray(gray, width, height, x, y))
+    }
+  }
+  if (values.length === 0) return 255
+  values.sort((a, b) => a - b)
+  return values[Math.floor(values.length / 2)]
+}
+
+function sampleGray(gray: Uint8Array, width: number, height: number, x: number, y: number): number {
+  const xx = Math.round(x)
+  const yy = Math.round(y)
+  if (xx < 0 || yy < 0 || xx >= width || yy >= height) return 255
+  return gray[yy * width + xx]
+}
+
+function clusterRails(hits: { offset: number; cover: number }[]): { offset: number; cover: number }[] {
+  const sorted = [...hits].sort((a, b) => a.offset - b.offset)
+  const out: { offset: number; cover: number }[] = []
+  for (const hit of sorted) {
+    const last = out[out.length - 1]
+    if (last && hit.offset - last.offset <= 2) {
+      if (hit.cover > last.cover) {
+        last.offset = hit.offset
+        last.cover = hit.cover
+      }
+    } else {
+      out.push({ ...hit })
+    }
+  }
+  return out
+}
+
 function axisAligned(frag: WallFragment): boolean {
   const dx = Math.abs(frag.b.x - frag.a.x)
   const dy = Math.abs(frag.b.y - frag.a.y)

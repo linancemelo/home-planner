@@ -99,3 +99,43 @@ export function doorStrokes(gray: Uint8Array, width: number, height: number): Ui
   }
   return out
 }
+
+/** 既有牆缺口上的淺灰門扇、點線。只在缺口裡用，不拿來沿實心牆掃圓弧。 */
+export function faintStrokes(gray: Uint8Array, width: number, height: number): Uint8Array {
+  const mark = new Uint8Array(width * height)
+  const dirs: [number, number, number, number][] = [
+    [1, 0, 0, 1],
+    [0, 1, 1, 0],
+    [1, 1, -1, 1],
+    [1, -1, 1, 1],
+  ]
+  for (let y = 3; y < height - 3; y++) {
+    for (let x = 3; x < width - 3; x++) {
+      const g = gray[y * width + x]
+      if (g > 188) continue
+      for (const [dx, dy, px, py] of dirs) {
+        const along1 = gray[(y + dy) * width + (x + dx)]
+        const along2 = gray[(y - dy) * width + (x - dx)]
+        const a2 = gray[(y + 2 * py) * width + (x + 2 * px)]
+        const b2 = gray[(y - 2 * py) * width + (x - 2 * px)]
+        if (along1 <= g + 42 && along2 <= g + 42 && a2 >= g + 22 && b2 >= g + 22) {
+          mark[y * width + x] = 1
+          break
+        }
+      }
+    }
+  }
+  const out = new Uint8Array(width * height)
+  for (let y = 6; y < height - 6; y++) {
+    for (let x = 6; x < width - 6; x++) {
+      if (!mark[y * width + x]) continue
+      let n = 0
+      for (let dy = -6; dy <= 6; dy++) {
+        const row = (y + dy) * width
+        for (let dx = -6; dx <= 6; dx++) if (mark[row + x + dx]) n++
+      }
+      if (n >= 6 && n <= 40) out[y * width + x] = 1
+    }
+  }
+  return out
+}

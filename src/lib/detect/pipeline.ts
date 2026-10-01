@@ -8,8 +8,8 @@ import {
   DEFAULT_CEILING_HEIGHT_M,
   DEFAULT_WALL_THICKNESS_M,
 } from "../units.ts"
-import { evaluateDoor, findSlidingsOnWalls, findSwingsOnWalls } from "./doors.ts"
-import { doorStrokes, thinStrokes } from "./strokes.ts"
+import { evaluateDoor, findFaintGapSwings, findOpeningSliders, findSlidingsOnWalls, findSwingsOnWalls } from "./doors.ts"
+import { doorStrokes, faintStrokes, thinStrokes } from "./strokes.ts"
 import { detectWallFragments, findPixelGaps, type WallFragment } from "./walls.ts"
 import { evaluateWindow, findWindowsOnWalls } from "./windows.ts"
 
@@ -165,7 +165,31 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
   for (let i = 0; i < swingInk.length; i++) {
     if (pre.cleaned[i] && !pre.thick[i]) swingInk[i] = 1
   }
+  const faintInk = faintStrokes(pre.gray, pre.width, pre.height)
+  for (let i = 0; i < faintInk.length; i++) {
+    if (swingInk[i]) faintInk[i] = 1
+  }
   const searchLines = colinearSearchLines(walls.fragments)
+
+  for (const swing of findFaintGapSwings(
+    faintInk,
+    pre.width,
+    pre.height,
+    gaps,
+    walls.fragments,
+    walls.metersPerPixel,
+  )) {
+    if (clashes(swing.openingA, swing.openingB)) continue
+    pxDoors.push({
+      kind: "swing",
+      openingA: swing.openingA,
+      openingB: swing.openingB,
+      hinge: swing.hinge,
+      leafTip: swing.leafTip,
+      leafLengthPx: swing.leafLengthPx,
+      confidence: swing.confidence,
+    })
+  }
 
   for (const swing of findSwingsOnWalls(
     swingInk,
@@ -183,6 +207,23 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
       leafTip: swing.leafTip,
       leafLengthPx: swing.leafLengthPx,
       confidence: swing.confidence,
+    })
+  }
+  for (const slide of findOpeningSliders(
+    pre.gray,
+    pre.width,
+    pre.height,
+    gaps,
+    walls.metersPerPixel,
+    swingInk,
+  )) {
+    if (clashes(slide.openingA, slide.openingB)) continue
+    pxDoors.push({
+      kind: "sliding",
+      openingA: slide.openingA,
+      openingB: slide.openingB,
+      sliding: slide,
+      confidence: slide.confidence,
     })
   }
   for (const slide of findSlidingsOnWalls(

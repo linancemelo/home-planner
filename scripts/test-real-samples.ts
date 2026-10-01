@@ -24,14 +24,13 @@ const cases: {
     windowAtLeast: 2,
   },
   {
-    // 上方外牆 y≈160 有兩段缺口（約 x 587–682、804–920），牆墨是斷的，
-    // 但缺口裡只有淺灰鋪面，沒有錯開的兩條短線，也沒有門扇加四分之一圓弧。
-    // 當成拉門或平開會是猜。所以門的下限是 0，不要求拉門。
+    // 上方外牆兩段約 1 m 以上的缺口有橫貫細線和灰玻璃，記成拉門。
     file: "furnished-en.jpg",
     notes: ["未採信", "近黑結構線", "疑似平開門但特徵不足"],
-    range: { walls: [8, 36], doors: [0, 3], windows: [2, 6] },
+    range: { walls: [8, 36], doors: [2, 6], windows: [2, 6] },
     longestM: 3.5,
     windowAtLeast: 2,
+    slidingAtLeast: 1,
   },
   {
     file: "interior-design-cad.jpg",
