@@ -40,15 +40,26 @@ export function preprocess(image: ImageSource): PreprocessResult {
     for (let i = 0; i < gray.length; i++) hist[gray[i]]++
   }
 
-  const ink = highContrast(hist)
-    ? otsuInk(gray, hist)
-    : sauvola(gray, width, height, 31, 0.18)
+  const notes: string[] = []
+  let ink: Uint8Array
+  if (highContrast(hist)) {
+    ink = otsuInk(gray, hist)
+  } else {
+    ink = photoStructureInk(gray, notes)
+    let dark = 0
+    for (let i = 0; i < ink.length; i++) dark += ink[i]
+    if (dark < ink.length * 0.004) {
+      ink = sauvola(gray, width, height, 31, 0.18)
+      notes.push("近黑像素太少，已改回局部二值化。")
+    }
+  }
   denoiseIsolated(ink, width, height)
 
-  const notes: string[] = []
   maskBorderFrame(ink, width, height, notes)
   maskCornerFrames(ink, width, height, notes)
   maskScaleBar(ink, width, height, notes)
+  maskFullWidthBands(ink, width, height, notes)
+  maskTitleBlock(ink, width, height, notes)
 
   const raw = ink.slice()
   const removed = removeSmallSymbols(ink, width, height, notes)
@@ -99,6 +110,15 @@ function otsuInk(gray: Uint8Array, hist: Uint32Array): Uint8Array {
   }
   const ink = new Uint8Array(gray.length)
   for (let i = 0; i < gray.length; i++) ink[i] = gray[i] <= threshold ? 1 : 0
+  return ink
+}
+
+/** 銷售圖、彩色平面：只留近黑的牆與門線。木紋、地磚、淺色浮水印不進墨水。 */
+function photoStructureInk(gray: Uint8Array, notes: string[]): Uint8Array {
+  const ink = new Uint8Array(gray.length)
+  const threshold = 64
+  for (let i = 0; i < gray.length; i++) ink[i] = gray[i] <= threshold ? 1 : 0
+  notes.push("彩色或紋理底圖只保留近黑結構線，已略過中間調的地板、家具塗裝與淺色浮水印。")
   return ink
 }
 
@@ -323,6 +343,100 @@ function maskScaleBar(ink: Uint8Array, w: number, h: number, notes: string[]): v
   if (!best) return
   clearRect(ink, w, h, best.x1 - 3, best.y - 14, best.x2 + 3, best.y + 14)
   notes.push("已遮罩疑似比例尺。")
+}
+
+/** 底部色帶、頂部橫幅這類整寬塗色，不是牆。 */
+function maskFullWidthBands(ink: Uint8Array, w: number, h: number, notes: string[]): void {
+  const bandLimit = Math.floor(h * 0.22)
+  const minBand = Math.max(18, Math.floor(h * 0.035))
+  const ranges: [number, number][] = [
+    [0, bandLimit],
+    [h - bandLimit, h - 1],
+  ]
+  let masked = false
+  for (const [y0, y1] of ranges) {
+    let runStart = -1
+    const flush = (yEnd: number) => {
+      if (runStart < 0) return
+      const height = yEnd - runStart + 1
+      if (height >= minBand) {
+        clearRect(ink, w, h, 0, runStart, w - 1, yEnd)
+        masked = true
+      }
+      runStart = -1
+    }
+    for (let y = y0; y <= y1; y++) {
+      let hits = 0
+      const row = y * w
+      for (let x = 0; x < w; x += 2) if (ink[row + x]) hits++
+      const covered = hits / (w / 2) > 0.42
+      if (covered && runStart < 0) runStart = y
+      if (!covered) flush(y - 1)
+    }
+    flush(y1)
+  }
+  if (masked) notes.push("已遮罩整寬色帶或橫幅。")
+}
+
+/** 右側整欄圖說：一條幾乎貫高的直線，右邊是稀疏文字而不是實心牆。 */
+function maskTitleBlock(ink: Uint8Array, w: number, h: number, notes: string[]): void {
+  const y0 = Math.floor(h * 0.05)
+  const y1 = Math.floor(h * 0.95)
+  const samples = Math.max(1, Math.floor((y1 - y0) / 2))
+  const x0 = Math.floor(w * 0.56)
+  const x1 = Math.floor(w * 0.9)
+  let bestX = -1
+  let bestCov = 0
+  for (let x = x0; x <= x1; x++) {
+    let hits = 0
+    for (let y = y0; y < y1; y += 2) {
+      const row = y * w
+      if (
+        ink[row + x] ||
+        (x > 0 && ink[row + x - 1]) ||
+        (x + 1 < w && ink[row + x + 1])
+      ) {
+        hits++
+      }
+    }
+    const cov = hits / samples
+    if (cov > bestCov) {
+      bestCov = cov
+      bestX = x
+    }
+  }
+  if (bestX < 0 || bestCov < 0.28) return
+
+  let right = 0
+  let rightN = 0
+  const rx1 = Math.min(w - 1, bestX + Math.floor(w * 0.3))
+  for (let y = y0; y < y1; y += 3) {
+    const row = y * w
+    for (let x = bestX + 4; x < rx1; x += 3) {
+      rightN++
+      if (ink[row + x]) right++
+    }
+  }
+  const density = rightN === 0 ? 0 : right / rightN
+  if (density < 0.012 || density > 0.2) return
+  let rules = 0
+  for (let y = y0; y < y1; y++) {
+    let run = 0
+    let longest = 0
+    const row = y * w
+    for (let x = bestX + 8; x < rx1; x++) {
+      if (ink[row + x]) {
+        run++
+        if (run > longest) longest = run
+      } else {
+        run = 0
+      }
+    }
+    if (longest > Math.min(120, w * 0.06)) rules++
+  }
+  if (rules < 8) return
+  clearRect(ink, w, h, bestX - 3, 0, w - 1, h - 1)
+  notes.push("已遮罩右側圖說或標題欄。")
 }
 
 function removeSmallSymbols(

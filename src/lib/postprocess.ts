@@ -67,12 +67,20 @@ export function postprocess(input: {
     notes.push("已略過疑似家具的封閉小矩形，不視為牆。")
   }
 
-  walls = walls.filter((w) => dist(w.a, w.b) >= MIN_SEGMENT_LENGTH_M - 1e-6)
-
   const openings = [
     ...doors.map((d) => ({ a: d.openingA, b: d.openingB, kind: "door" as const })),
     ...windows.map((w) => ({ a: w.openingA, b: w.openingB, kind: "window" as const })),
   ]
+  walls = walls.filter((w) => {
+    if (dist(w.a, w.b) >= MIN_SEGMENT_LENGTH_M - 1e-6) return true
+    return openings.some(
+      (op) =>
+        dist(w.a, op.a) < 0.25 ||
+        dist(w.a, op.b) < 0.25 ||
+        dist(w.b, op.a) < 0.25 ||
+        dist(w.b, op.b) < 0.25,
+    )
+  })
   walls = mergeColinear(walls, openings, notes, input.metersPerPixel)
 
   const projected = projectAndExcavate(walls, doors, windows, input.metersPerPixel, notes)

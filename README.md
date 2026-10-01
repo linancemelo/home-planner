@@ -79,3 +79,11 @@ v2 才會做 3D：Three.js / React Three Fiber 的第一人稱。不鎖滑鼠指
 - `ambiguous-swing.png`
 
 每個圖旁邊有同名的 `.expected.json`。
+
+另外三張真實圖在 `src/fixtures/real-samples/`，`npm test` 會一併檢查數量與備註，而不是逐點對座標：
+
+- `marketing-591.jpg`：銷售透視、591 浮水印、實心黑牆。只留近黑結構，木紋和淺色浮水印不會進牆。
+- `furnished-en.jpg`：彩色家具平面、英文房名、指北針。牆以實心粗線為準。
+- `interior-design-cad.jpg`：施工圖。右側標題欄、指北針會遮掉，圖上的尺寸數字不採信。
+
+這三張的門窗仍可能少報。平開門一定要牆缺口、門扇、約四分之一圓弧都在，少一樣就寫進備註，不補猜。灰色玻璃隔間、斜向凸窗、沒有打斷牆線的門符號，這版跟不到。比例一樣不可信。

@@ -35,7 +35,7 @@ export function detectFloorplan(image: ImageSource, sourceName: string): Pipelin
   const walls = detectWallFragments(pre.lines, pre.raw, pre.cleaned, pre.width, pre.height)
   diagnostics.push(...walls.diagnostics)
 
-  const gaps = findPixelGaps(walls.fragments, walls.metersPerPixel)
+  const gaps = findPixelGaps(walls.fragments, walls.metersPerPixel, walls.illustrative)
   diagnostics.push(`共線缺口 ${gaps.length} 處。`)
 
   const pxNotes: string[] = []

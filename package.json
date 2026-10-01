@@ -9,7 +9,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "generate:fixtures": "tsx scripts/generate-fixtures.ts",
-    "test": "tsx scripts/test-fixtures.ts"
+    "test": "tsx scripts/test-fixtures.ts && tsx scripts/test-real-samples.ts"
   },
   "dependencies": {
     "@fontsource/noto-sans-tc": "^5.3.0",
@@ -20,11 +20,13 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/jpeg-js": "^0.3.0",
     "@types/node": "^24.13.3",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "jpeg-js": "^0.4.4",
     "oxlint": "^1.81.0",
     "pngjs": "^7.0.0",
     "tsx": "^4.23.15",

@@ -19,7 +19,8 @@ export function evaluateWindow(
 ): WindowEval {
   const openingPx = dist(gap.a, gap.b)
   const openingM = openingPx * mpp
-  if (openingM < 0.4 || openingM > 3.2) return { status: "none" }
+  const pixelSized = openingPx >= 22 && openingPx <= 240
+  if ((openingM < 0.4 && !pixelSized) || openingM > 3.2) return { status: "none" }
 
   const band = Math.max(gap.thicknessPx * 0.85, 8)
   const runs = parallelRuns(ink, width, height, gap.a, gap.b, band).filter((run) => {

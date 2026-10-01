@@ -9,13 +9,16 @@ import clutterUrl from "./clutter.png"
 import clutterExpected from "./clutter.expected.json" with { type: "json" }
 import ambiguousUrl from "./ambiguous-swing.png"
 import ambiguousExpected from "./ambiguous-swing.expected.json" with { type: "json" }
+import marketingUrl from "./real-samples/marketing-591.jpg"
+import furnishedUrl from "./real-samples/furnished-en.jpg"
+import cadUrl from "./real-samples/interior-design-cad.jpg"
 
 export type SamplePlan = {
   id: string
   title: string
   description: string
   imageUrl: string
-  expected: Floorplan
+  expected: Floorplan | null
 }
 
 export const samples: SamplePlan[] = [
@@ -53,5 +56,26 @@ export const samples: SamplePlan[] = [
     description: "缺口旁只有門扇線。缺少圓弧就不輸出門，並在備註註明特徵不足。",
     imageUrl: ambiguousUrl,
     expected: ambiguousExpected as Floorplan,
+  },
+  {
+    id: "marketing-591",
+    title: "銷售圖，實心黑牆",
+    description: "有浮水印、家具與色帶。只留近黑的牆。門弧若沒有牆缺口就不猜。",
+    imageUrl: marketingUrl,
+    expected: null,
+  },
+  {
+    id: "furnished-en",
+    title: "彩色平面，英文房名",
+    description: "粗牆與柱。玻璃隔間和灰色拉門扇可能被略過。",
+    imageUrl: furnishedUrl,
+    expected: null,
+  },
+  {
+    id: "interior-design-cad",
+    title: "施工圖，右側標題欄",
+    description: "尺寸數字不採信。標題欄與指北針會遮掉。斜向凸窗這版跟不到。",
+    imageUrl: cadUrl,
+    expected: null,
   },
 ]

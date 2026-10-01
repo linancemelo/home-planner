@@ -21,7 +21,7 @@ export default function App() {
 
   const sample = samples.find((item) => item.id === sampleId) ?? null
   const comparison = useMemo(() => {
-    if (!result || !sample) return null
+    if (!result || !sample?.expected) return null
     return compareFloorplans(result.floorplan, sample.expected)
   }, [result, sample])
 

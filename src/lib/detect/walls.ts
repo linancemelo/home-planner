@@ -15,6 +15,8 @@ export type WallDetectResult = {
   fragments: WallFragment[]
   metersPerPixel: number
   scaleEstimated: boolean
+  /** 銷售圖的黑牆筆畫遠厚於 12 cm 比例，門窗改看像素比例。 */
+  illustrative: boolean
   notes: string[]
   diagnostics: string[]
 }
@@ -43,21 +45,41 @@ export function detectWallFragments(
   diagnostics.push(`實心牆候選 ${solids.length} 條。`)
 
   const doubleFrags = pairs.walls
-  const mergedSolids = solids.filter((solid) => !coveredByDouble(solid, doubleFrags))
-  let fragments = dedupeFragments(
-    [...doubleFrags, ...mergedSolids].map(snapNearAxis),
-  )
-
+  let mergedSolids = solids.filter((solid) => !coveredByDouble(solid, doubleFrags))
+  let keptDoubles = doubleFrags
   const scale = estimateScale(doubleFrags)
-  if (!scale.estimated && mergedSolids.length > 0) {
+  const solidScale = dominantSolidThickness(mergedSolids)
+  let illustrative = false
+  if (
+    solidScale.thickness >= 6 &&
+    solidScale.count >= 3 &&
+    solidScale.thickness > Math.max(scale.medianSepPx, 4) * 1.45
+  ) {
+    const lo = solidScale.thickness * 0.62
+    const hi = solidScale.thickness * 1.4
+    keptDoubles = doubleFrags.filter((frag) => frag.thicknessPx >= lo && frag.thicknessPx <= hi)
+    mergedSolids = solids.filter((solid) => !coveredByDouble(solid, keptDoubles))
+    scale.metersPerPixel = DEFAULT_WALL_THICKNESS_M / solidScale.divisor
+    scale.estimated = true
+    scale.fromSolid = true
+    scale.medianSepPx = solidScale.thickness
+    illustrative = solidScale.thickness >= 30
+    notes.push("實心牆厚於細雙線，已以實心牆為準，並略過較細的雙線，避免家具或尺寸線被當成牆。")
+    diagnostics.push(
+      `實心牆厚中位數 ${solidScale.thickness.toFixed(1)} px，細雙線保留 ${keptDoubles.length} 條。`,
+    )
+  } else if (!scale.estimated && mergedSolids.length > 0) {
     const thicks = mergedSolids.map((s) => s.thicknessPx).sort((a, b) => a - b)
     const mid = thicks[thicks.length >> 1]
-    if (mid >= 5 && mid <= 40) {
+    if (mid >= 5 && mid <= 72) {
       scale.metersPerPixel = DEFAULT_WALL_THICKNESS_M / mid
       scale.estimated = true
       scale.fromSolid = true
+      scale.medianSepPx = mid
     }
   }
+
+  let fragments = dedupeFragments([...keptDoubles, ...mergedSolids].map(snapNearAxis))
 
   if (!scale.estimated) {
     notes.push(
@@ -82,9 +104,24 @@ export function detectWallFragments(
     fragments,
     metersPerPixel: mpp,
     scaleEstimated: scale.estimated,
+    illustrative,
     notes,
     diagnostics,
   }
+}
+
+function dominantSolidThickness(solids: WallFragment[]): {
+  thickness: number
+  count: number
+  /** 拿來除出每像素公尺。塗銷很厚時不要把整筆畫當成 0.12 m，否則門洞會小到被門檻丟掉。 */
+  divisor: number
+} {
+  const long = solids.filter((frag) => dist(frag.a, frag.b) >= 70)
+  if (long.length < 3) return { thickness: 0, count: long.length, divisor: 1 }
+  const thicks = long.map((frag) => frag.thicknessPx).sort((a, b) => a - b)
+  const thickness = thicks[thicks.length >> 1]
+  const divisor = thickness >= 30 ? Math.max(12, thickness / 3.2) : thickness
+  return { thickness, count: long.length, divisor }
 }
 
 function estimateScale(walls: WallFragment[]): {
@@ -316,6 +353,7 @@ function localOffset(
 }
 
 function detectSolidWalls(ink: Uint8Array, w: number, h: number): WallFragment[] {
+  const maxThick = Math.max(36, Math.min(78, Math.round(Math.min(w, h) * 0.075)))
   const horizontal: WallFragment[] = []
   const seedsH: { x: number; y: number; t: number }[] = []
   for (let x = 0; x < w; x++) {
@@ -328,7 +366,7 @@ function detectSolidWalls(ink: Uint8Array, w: number, h: number): WallFragment[]
       let y2 = y
       while (y2 < h && ink[y2 * w + x]) y2++
       const run = y2 - y
-      if (run >= 5 && run <= 36) seedsH.push({ x, y: (y + y2 - 1) / 2, t: run })
+      if (run >= 5 && run <= maxThick) seedsH.push({ x, y: (y + y2 - 1) / 2, t: run })
       y = y2
     }
   }
@@ -346,12 +384,15 @@ function detectSolidWalls(ink: Uint8Array, w: number, h: number): WallFragment[]
       let x2 = x
       while (x2 < w && ink[row + x2]) x2++
       const run = x2 - x
-      if (run >= 5 && run <= 36) seedsV.push({ x: (x + x2 - 1) / 2, y, t: run })
+      if (run >= 5 && run <= maxThick) seedsV.push({ x: (x + x2 - 1) / 2, y, t: run })
       x = x2
     }
   }
   const vertical = clusterAxis(seedsV, "v")
-  return [...horizontal, ...vertical].filter((f) => dist(f.a, f.b) >= 36)
+  return [...horizontal, ...vertical].filter((frag) => {
+    const length = dist(frag.a, frag.b)
+    return length >= 18 && length >= frag.thicknessPx * 1.5
+  })
 }
 
 function clusterAxis(
@@ -383,7 +424,7 @@ function clusterAxis(
     for (let k = 1; k <= band.length; k++) {
       if (k === band.length || band[k][along] - band[k - 1][along] > 8) {
         const slice = band.slice(start, k)
-        if (slice.length >= 28) {
+        if (slice.length >= 14) {
           const fixed = slice.reduce((s, p) => s + p[key], 0) / slice.length
           const thick = slice.reduce((s, p) => s + p.t, 0) / slice.length
           const a0 = slice[0][along]
@@ -507,10 +548,15 @@ export type PixelGap = {
 }
 
 /** 把共線牆段排好，找出中間夠大的缺口。缺口兩側仍是同一道牆。 */
-export function findPixelGaps(fragments: WallFragment[], mpp: number): PixelGap[] {
+export function findPixelGaps(
+  fragments: WallFragment[],
+  mpp: number,
+  illustrative = false,
+): PixelGap[] {
   const groups = groupColinear(fragments)
-  const minGap = Math.max(20, 0.45 / mpp)
-  const maxGap = Math.max(minGap + 10, 3.4 / mpp)
+  const wallPx = Math.max(8, 0.12 / Math.max(mpp, 1e-6))
+  const minGap = illustrative ? Math.max(18, Math.min(40, wallPx * 0.9)) : Math.max(20, 0.45 / mpp)
+  const maxGap = illustrative ? Math.max(160, wallPx * 12) : Math.max(minGap + 10, 3.4 / mpp)
   const gaps: PixelGap[] = []
 
   for (const group of groups) {
