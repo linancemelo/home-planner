@@ -2,6 +2,7 @@ import fs from "node:fs"
 import jpeg from "jpeg-js"
 import { detectFloorplan } from "../src/lib/detect/pipeline.ts"
 import { meterToPixel } from "../src/lib/geometry.ts"
+import { PLAYER_RADIUS, buildRoom, doorBlockers, isBlocked } from "../src/lib/scene/room.ts"
 import type { Floorplan } from "../src/types/floorplan.ts"
 
 type Range = { walls: [number, number]; doors: [number, number]; windows: [number, number] }
@@ -121,6 +122,15 @@ for (const item of cases) {
       assert(span < item.maxWindowM, `${item.file} window ${span.toFixed(2)} m exceeds ${item.maxWindowM}`)
     }
   }
+  const room = buildRoom(plan)
+  assert(room.solids.length > 0, `${item.file} 3d solids`)
+  assert(room.ceiling === plan.meta.ceilingHeightM, `${item.file} ceiling passed through`)
+  assert(
+    !isBlocked(room.spawn.x, room.spawn.z, PLAYER_RADIUS, [...room.collision, ...doorBlockers(room, {})]),
+    `${item.file} 3d spawn blocked`,
+  )
+  assert(room.swings.length + room.sliders.length === plan.doors.length, `${item.file} 3d door count`)
+  assert(room.glass.length === plan.windows.length, `${item.file} 3d window glass`)
 }
 
 if (failed > 0) {

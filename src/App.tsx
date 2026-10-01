@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react"
+import { lazy, Suspense, useMemo, useState } from "react"
 import { Plan2DOverlay } from "./components/Plan2DOverlay.tsx"
 import { UploadPanel } from "./components/UploadPanel.tsx"
+
+const Roam3D = lazy(() => import("./components/Roam3D.tsx").then((mod) => ({ default: mod.Roam3D })))
 import { samples } from "./fixtures/manifest.ts"
 import { compareFloorplans } from "./lib/compare.ts"
 import { detectFloorplan, type PipelineResult } from "./lib/detect/pipeline.ts"
@@ -18,6 +20,7 @@ export default function App() {
   const [sampleId, setSampleId] = useState<string | null>(null)
   const [showBinary, setShowBinary] = useState(false)
   const [showJson, setShowJson] = useState(false)
+  const [mode, setMode] = useState<"2d" | "3d">("2d")
 
   const sample = samples.find((item) => item.id === sampleId) ?? null
   const comparison = useMemo(() => {
@@ -28,6 +31,7 @@ export default function App() {
   const run = async (img: HTMLImageElement, name: string, url: string, nextSample: string | null) => {
     setStatus("running")
     setError(null)
+    setMode("2d")
     setSampleId(nextSample)
     setImageUrl(url)
     setResult(null)
@@ -86,13 +90,13 @@ export default function App() {
       <header className="border-b border-[#ddd4c6] bg-[#f7f3ea]">
         <div className="mx-auto flex max-w-6xl flex-wrap items-end justify-between gap-3 px-4 py-4">
           <div>
-            <p className="text-xs font-medium tracking-[0.14em] text-[#9a3412]">FLOORPLAN V1</p>
+            <p className="text-xs font-medium tracking-[0.14em] text-[#9a3412]">V1 辨識 · V2 漫遊</p>
             <h1 className="text-2xl font-semibold text-[#1c1917]">平面圖解讀</h1>
             <p className="mt-1 max-w-xl text-sm text-[#5c564e]">
-              上傳平面圖，只擷取牆、門、窗。看不清楚就略過並寫進備註，不把家具或尺寸數字當成牆。
+              上傳平面圖，只擷取牆、門、窗。看不清楚就略過並寫進備註。2D 確認後可走進 3D。
             </p>
           </div>
-          <p className="text-xs text-[#6b645c]">2D 疊圖。3D 漫遊留到下一版。</p>
+          <p className="text-xs text-[#6b645c]">公尺直接沿用 JSON。比例未採信，不能當施工尺寸。</p>
         </div>
       </header>
 
@@ -113,9 +117,12 @@ export default function App() {
             sampleDescription={sample?.description ?? null}
             showBinary={showBinary}
             showJson={showJson}
+            mode={mode}
             onToggleBinary={() => setShowBinary((v) => !v)}
             onToggleJson={() => setShowJson((v) => !v)}
             onDownload={() => result && downloadPlan(result.floorplan)}
+            onEnter3D={() => setMode("3d")}
+            onExit3D={() => setMode("2d")}
           />
         </aside>
         <section className="min-h-[70vh]">
@@ -123,6 +130,16 @@ export default function App() {
             <div className="flex h-full min-h-[420px] items-center justify-center rounded-xl border border-[#ddd4c6] bg-[#f7f3ea] text-sm text-[#5c564e]">
               正在前處理，並擷取牆、門、窗…
             </div>
+          ) : mode === "3d" && result ? (
+            <Suspense
+              fallback={
+                <div className="flex h-[72vh] min-h-[420px] items-center justify-center rounded-xl border border-[#ddd4c6] bg-[#f7f3ea] text-sm text-[#5c564e]">
+                  正在準備 3D…
+                </div>
+              }
+            >
+              <Roam3D plan={result.floorplan} onBack={() => setMode("2d")} />
+            </Suspense>
           ) : (
             <Plan2DOverlay imageUrl={imageUrl} result={result} showBinary={showBinary} />
           )}
@@ -140,9 +157,12 @@ function ResultCard({
   sampleDescription,
   showBinary,
   showJson,
+  mode,
   onToggleBinary,
   onToggleJson,
   onDownload,
+  onEnter3D,
+  onExit3D,
 }: {
   status: Status
   error: string | null
@@ -151,9 +171,12 @@ function ResultCard({
   sampleDescription: string | null
   showBinary: boolean
   showJson: boolean
+  mode: "2d" | "3d"
   onToggleBinary: () => void
   onToggleJson: () => void
   onDownload: () => void
+  onEnter3D: () => void
+  onExit3D: () => void
 }) {
   if (status === "idle") {
     return (
@@ -203,6 +226,11 @@ function ResultCard({
           ))}
         </ul>
       </div>
+      {mode === "3d" && (
+        <p className="text-xs leading-5 text-[#5c564e]">
+          拖曳視角（不鎖指標）、WASD 移動、對準門按 E 或輕點門扇。高度用天花 {floorplan.meta.ceilingHeightM} m。
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
@@ -211,6 +239,15 @@ function ResultCard({
         >
           下載 JSON
         </button>
+        {mode === "2d" ? (
+          <button type="button" onClick={onEnter3D} className="rounded-lg bg-[#9a3412] px-3 py-1.5 text-sm text-[#f7f3ea]">
+            進入 3D
+          </button>
+        ) : (
+          <button type="button" onClick={onExit3D} className="rounded-lg bg-[#efe8dc] px-3 py-1.5 text-sm">
+            回到 2D
+          </button>
+        )}
         <button type="button" onClick={onToggleBinary} className="rounded-lg bg-[#efe8dc] px-3 py-1.5 text-sm">
           {showBinary ? "看原圖" : "看前處理"}
         </button>
