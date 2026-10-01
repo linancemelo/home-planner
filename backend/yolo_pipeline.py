@@ -267,7 +267,14 @@ def _seg_length_m(w: dict[str, Any]) -> float:
 def _filter_short_walls(
     walls: list[dict[str, Any]], *, min_len_m: float = 0.65
 ) -> list[dict[str, Any]]:
-    return [w for w in walls if _seg_length_m(w) >= min_len_m]
+    out: list[dict[str, Any]] = []
+    for w in walls:
+        L = _seg_length_m(w)
+        if L >= min_len_m:
+            out.append(w)
+        elif "ring" in str(w.get("id", "")) and L >= 0.40:
+            out.append(w)
+    return out
 
 
 def _merge_collinear_walls(
@@ -301,15 +308,26 @@ def _merge_collinear_walls(
         key = (orient, int(round(const / max(axis_tol_m, 0.05))))
         groups[key].append((const, t0, t1, w))
 
+    def _merge_id(srcs: list[dict[str, Any]], mid: int) -> str:
+        """Prefer w-ring / w-ink identity so downstream priority survives merge."""
+        ids = [str(s.get("id", "")) for s in srcs]
+        if any("ring" in i for i in ids):
+            return f"w-ring-m-{mid}"
+        if any("ink" in i for i in ids):
+            return f"w-ink-m-{mid}"
+        return f"w-m-{mid}"
+
     merged: list[dict[str, Any]] = []
     mid = 0
     for (orient, _), segs in groups.items():
         segs = sorted(segs, key=lambda s: s[1])
-        cur_const, cur_t0, cur_t1, _src = segs[0]
-        for const, t0, t1, _w in segs[1:]:
+        cur_const, cur_t0, cur_t1, src0 = segs[0]
+        cur_srcs: list[dict[str, Any]] = [src0]
+        for const, t0, t1, ww in segs[1:]:
             if t0 <= cur_t1 + gap_tol_m:
                 cur_t1 = max(cur_t1, t1)
                 cur_const = (cur_const + const) / 2
+                cur_srcs.append(ww)
             else:
                 mid += 1
                 if orient == "h":
@@ -318,7 +336,7 @@ def _merge_collinear_walls(
                     a, b = (cur_const, cur_t0), (cur_const, cur_t1)
                 merged.append(
                     {
-                        "id": f"w-m-{mid}",
+                        "id": _merge_id(cur_srcs, mid),
                         "a": _vec(*a),
                         "b": _vec(*b),
                         "thicknessM": WALL_THICKNESS_M,
@@ -327,6 +345,7 @@ def _merge_collinear_walls(
                     }
                 )
                 cur_const, cur_t0, cur_t1 = const, t0, t1
+                cur_srcs = [ww]
         mid += 1
         if orient == "h":
             a, b = (cur_t0, cur_const), (cur_t1, cur_const)
@@ -334,7 +353,7 @@ def _merge_collinear_walls(
             a, b = (cur_const, cur_t0), (cur_const, cur_t1)
         merged.append(
             {
-                "id": f"w-m-{mid}",
+                "id": _merge_id(cur_srcs, mid),
                 "a": _vec(*a),
                 "b": _vec(*b),
                 "thicknessM": WALL_THICKNESS_M,
@@ -659,6 +678,54 @@ def _project_opening_onto_nearest_wall(
     return na, nb, best["id"], best_d
 
 
+
+def _flush_openings_to_perimeter_walls(
+    items: list[dict[str, Any]],
+    walls: list[dict[str, Any]],
+    *,
+    max_dist_m: float = 0.75,
+) -> tuple[list[dict[str, Any]], int]:
+    """Project openings onto nearest ring/exterior wall for flush alignment."""
+    peri = [w for w in walls if "ring" in str(w.get("id", ""))]
+    if not peri:
+        # fallback: near-extent walls
+        extent = _layout_extent_m(walls, None)
+        if extent is None:
+            return items, 0
+        min_x, min_y, max_x, max_y = extent
+        margin = 0.95
+        peri = []
+        for w in walls:
+            mx = (w["a"]["x"] + w["b"]["x"]) / 2
+            my = (w["a"]["y"] + w["b"]["y"]) / 2
+            if (
+                abs(mx - min_x) < margin
+                or abs(mx - max_x) < margin
+                or abs(my - min_y) < margin
+                or abs(my - max_y) < margin
+            ):
+                peri.append(w)
+    if not peri:
+        return items, 0
+    out: list[dict[str, Any]] = []
+    n_flush = 0
+    for it in items:
+        oa = (it["opening"]["a"]["x"], it["opening"]["a"]["y"])
+        ob = (it["opening"]["b"]["x"], it["opening"]["b"]["y"])
+        proj = _project_opening_onto_nearest_wall(oa, ob, peri)
+        if proj is not None:
+            na, nb, wid, d = proj
+            if d <= max_dist_m:
+                it = dict(it)
+                it["opening"] = _seg(na, nb)
+                it["wallId"] = wid
+                n_flush += 1
+                out.append(it)
+                continue
+        out.append(it)
+    return out, n_flush
+
+
 def _filter_openings_near_walls(
     items: list[dict[str, Any]],
     walls: list[dict[str, Any]],
@@ -749,7 +816,7 @@ def _filter_transecting_walls(
         wid = str(w.get("id", ""))
         # Ink / skeleton walls already sit on dark strokes — don't drop as "transect"
         # when room AABBs are coarse marketing blobs.
-        if "ink" in wid or "skel" in wid:
+        if "ink" in wid or "skel" in wid or "ring" in wid:
             kept.append(w)
             continue
         ratio = _wall_interior_hit_ratio(w, rooms)
@@ -943,6 +1010,577 @@ def _split_free_via_watershed(
             if int(m.sum() // 255) >= min_area * 0.55:
                 out.append(m)
     return out
+
+
+
+def _hv_snap_closed_polyline(pts_xy: np.ndarray, *, angle_tol_deg: float = 20.0) -> np.ndarray:
+    """Snap a closed polyline to H/V edges (stair-step diagonals). Returns Nx2."""
+    n = len(pts_xy)
+    if n < 3:
+        return pts_xy.astype(np.float64)
+    out: list[np.ndarray] = [pts_xy[0].astype(np.float64)]
+    for i in range(n):
+        a = out[-1]
+        b = pts_xy[(i + 1) % n].astype(np.float64)
+        dx, dy = float(b[0] - a[0]), float(b[1] - a[1])
+        if abs(dx) < 1.5 and abs(dy) < 1.5:
+            continue
+        ang = abs(float(np.degrees(np.arctan2(dy, dx)))) % 180.0
+        near_h = ang <= angle_tol_deg or ang >= 180.0 - angle_tol_deg
+        near_v = abs(ang - 90.0) <= angle_tol_deg
+        if near_h:
+            y = 0.5 * (a[1] + b[1])
+            if abs(out[-1][1] - y) > 2:
+                out[-1] = np.array([out[-1][0], y], dtype=np.float64)
+            out.append(np.array([b[0], y], dtype=np.float64))
+        elif near_v:
+            x = 0.5 * (a[0] + b[0])
+            if abs(out[-1][0] - x) > 2:
+                out[-1] = np.array([x, out[-1][1]], dtype=np.float64)
+            out.append(np.array([x, b[1]], dtype=np.float64))
+        else:
+            if abs(dx) >= abs(dy):
+                out.append(np.array([b[0], a[1]], dtype=np.float64))
+                out.append(np.array([b[0], b[1]], dtype=np.float64))
+            else:
+                out.append(np.array([a[0], b[1]], dtype=np.float64))
+                out.append(np.array([b[0], b[1]], dtype=np.float64))
+    cleaned: list[np.ndarray] = [out[0]]
+    for p in out[1:]:
+        if abs(p[0] - cleaned[-1][0]) > 2 or abs(p[1] - cleaned[-1][1]) > 2:
+            cleaned.append(p)
+    if len(cleaned) >= 3:
+        a, b = cleaned[-1], cleaned[0]
+        if abs(a[0] - b[0]) > 3 or abs(a[1] - b[1]) > 3:
+            if abs(a[0] - b[0]) <= abs(a[1] - b[1]):
+                cleaned[-1] = np.array([b[0], a[1]], dtype=np.float64)
+                if abs(cleaned[-1][1] - b[1]) > 3:
+                    cleaned.append(np.array([b[0], b[1]], dtype=np.float64))
+            else:
+                cleaned[-1] = np.array([a[0], b[1]], dtype=np.float64)
+                if abs(cleaned[-1][0] - b[0]) > 3:
+                    cleaned.append(np.array([b[0], b[1]], dtype=np.float64))
+    return np.asarray(cleaned, dtype=np.float64)
+
+
+def _refine_contour_pts_to_ink(
+    cnt: np.ndarray,
+    ink: np.ndarray,
+    *,
+    max_search: int = 28,
+    subsample: int = 400,
+) -> np.ndarray:
+    """Move footprint contour samples inward to nearest morph-closed ink."""
+    pts = cnt.reshape(-1, 2).astype(np.float64)
+    if len(pts) < 8:
+        return pts
+    c_x = float(np.mean(pts[:, 0]))
+    c_y = float(np.mean(pts[:, 1]))
+    h, w = ink.shape[:2]
+    ink_d = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=1)
+    step = max(1, len(pts) // max(subsample, 50))
+    out: list[tuple[float, float]] = []
+    for p in pts[::step]:
+        px, py = float(p[0]), float(p[1])
+        vx, vy = c_x - px, c_y - py
+        nrm = (vx * vx + vy * vy) ** 0.5 or 1.0
+        ux, uy = vx / nrm, vy / nrm
+        best: tuple[float, float] | None = None
+        for s in range(0, max_search + 1):
+            xx = int(round(px + ux * s))
+            yy = int(round(py + uy * s))
+            if not (0 <= xx < w and 0 <= yy < h):
+                break
+            if ink_d[yy, xx] > 0:
+                best = (float(xx), float(yy))
+                break
+        if best is None:
+            for r in range(1, 12):
+                y0b, y1b = max(0, int(py) - r), min(h, int(py) + r + 1)
+                x0b, x1b = max(0, int(px) - r), min(w, int(px) + r + 1)
+                ys, xs = np.where(ink_d[y0b:y1b, x0b:x1b] > 0)
+                if xs.size:
+                    d2 = (xs - (px - x0b)) ** 2 + (ys - (py - y0b)) ** 2
+                    k = int(np.argmin(d2))
+                    best = (float(xs[k] + x0b), float(ys[k] + y0b))
+                    break
+        out.append(best if best is not None else (px, py))
+    return np.asarray(out, dtype=np.float64)
+
+
+
+
+def _bridge_ring_corners(
+    walls: list[dict[str, Any]], *, gap_tol_m: float = 1.25
+) -> list[dict[str, Any]]:
+    """If two ring endpoints are unmatched within gap_tol, insert H/V corner bridge."""
+    if len(walls) < 2:
+        return walls
+    out = [dict(w) for w in walls]
+    # Collect unmatched endpoints
+    ends: list[tuple[int, str, float, float]] = []
+    for i, w in enumerate(out):
+        for end in ("a", "b"):
+            x, y = w[end]["x"], w[end]["y"]
+            matched = False
+            for j, o in enumerate(out):
+                if i == j:
+                    continue
+                for end2 in ("a", "b"):
+                    x2, y2 = o[end2]["x"], o[end2]["y"]
+                    if (x - x2) ** 2 + (y - y2) ** 2 <= 0.35 ** 2:
+                        matched = True
+                        break
+                if matched:
+                    break
+            if not matched:
+                ends.append((i, end, x, y))
+    # Pair unmatched ends that share nearly same x or y
+    used = set()
+    bridges: list[dict[str, Any]] = []
+    for a_i, (i, e1, x1, y1) in enumerate(ends):
+        if a_i in used:
+            continue
+        best = None
+        for b_i, (j, e2, x2, y2) in enumerate(ends):
+            if b_i <= a_i or b_i in used or i == j:
+                continue
+            dx, dy = abs(x1 - x2), abs(y1 - y2)
+            if dx <= 0.35 and 0.15 < dy <= gap_tol_m:
+                # vertical bridge
+                d = dy
+                if best is None or d < best[0]:
+                    best = (d, b_i, j, e2, x1, y1, x2, y2, "v")
+            elif dy <= 0.35 and 0.15 < dx <= gap_tol_m:
+                d = dx
+                if best is None or d < best[0]:
+                    best = (d, b_i, j, e2, x1, y1, x2, y2, "h")
+        if best is None:
+            continue
+        _d, b_i, j, e2, x1, y1, x2, y2, orient = best
+        used.add(a_i)
+        used.add(b_i)
+        if orient == "v":
+            cx = 0.5 * (x1 + x2)
+            a, b = (cx, min(y1, y2)), (cx, max(y1, y2))
+        else:
+            cy = 0.5 * (y1 + y2)
+            a, b = (min(x1, x2), cy), (max(x1, x2), cy)
+        bridges.append(
+            {
+                "id": f"w-ring-bridge-{len(bridges)+1}",
+                "a": _vec(*a),
+                "b": _vec(*b),
+                "thicknessM": WALL_THICKNESS_M,
+                "thicknessAssumed": True,
+                "heightM": CEILING_HEIGHT_M,
+            }
+        )
+    return out + bridges
+
+def _close_ring_endpoint_gaps(
+    walls: list[dict[str, Any]], *, gap_tol_m: float = 0.85
+) -> list[dict[str, Any]]:
+    """Extend H/V ring segment endpoints to meet neighbors (close small corners)."""
+    if len(walls) < 3:
+        return walls
+    out = [dict(w) for w in walls]
+    # For each endpoint, find nearest other endpoint; if within gap_tol and axis-compatible, snap
+    for i, w in enumerate(out):
+        for end in ("a", "b"):
+            x, y = w[end]["x"], w[end]["y"]
+            best = None
+            best_d = gap_tol_m
+            for j, o in enumerate(out):
+                if i == j:
+                    continue
+                for end2 in ("a", "b"):
+                    x2, y2 = o[end2]["x"], o[end2]["y"]
+                    d = ((x - x2) ** 2 + (y - y2) ** 2) ** 0.5
+                    if 1e-6 < d < best_d:
+                        best_d = d
+                        best = (j, end2, x2, y2)
+            if best is None:
+                continue
+            j, end2, x2, y2 = best
+            # Snap both to shared corner: prefer H then V meeting point
+            wh = abs(w["a"]["y"] - w["b"]["y"]) < 0.25
+            oh = abs(out[j]["a"]["y"] - out[j]["b"]["y"]) < 0.25
+            if wh and not oh:
+                # w horizontal, o vertical → corner (o.x, w.y)
+                cx = out[j]["a"]["x"]  # vertical const x
+                cy = w["a"]["y"]
+                w[end] = _vec(cx, cy)
+                out[j][end2] = _vec(cx, cy)
+            elif oh and not wh:
+                cx = w["a"]["x"]
+                cy = out[j]["a"]["y"]
+                w[end] = _vec(cx, cy)
+                out[j][end2] = _vec(cx, cy)
+            else:
+                # same orientation: pull endpoints to midpoint
+                mx, my = 0.5 * (x + x2), 0.5 * (y + y2)
+                w[end] = _vec(mx, my)
+                out[j][end2] = _vec(mx, my)
+            out[i] = w
+    return out
+
+
+def _largest_connected_wall_component(
+    walls: list[dict[str, Any]], *, gap_tol_m: float = 0.70
+) -> list[dict[str, Any]]:
+    """Keep the largest endpoint-connected component (drop isolated ring spurs)."""
+    n = len(walls)
+    if n <= 1:
+        return walls
+    # Union-find on wall indices via endpoint proximity
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    ends = []
+    for i, w in enumerate(walls):
+        ends.append((i, w["a"]["x"], w["a"]["y"]))
+        ends.append((i, w["b"]["x"], w["b"]["y"]))
+    tol2 = gap_tol_m * gap_tol_m
+    for a in range(len(ends)):
+        i, x, y = ends[a]
+        for b in range(a + 1, len(ends)):
+            j, x2, y2 = ends[b]
+            if i == j:
+                continue
+            if (x - x2) ** 2 + (y - y2) ** 2 <= tol2:
+                union(i, j)
+    comps: dict[int, list[int]] = {}
+    for i in range(n):
+        comps.setdefault(find(i), []).append(i)
+    best = max(comps.values(), key=len)
+    return [walls[i] for i in sorted(best)]
+
+
+def _walls_form_closed_ring(
+    walls: list[dict[str, Any]], *, gap_tol_m: float = 0.55
+) -> bool:
+    """True if wall endpoints nearly form a single closed loop (≤1 broken corner)."""
+    if len(walls) < 3:
+        return False
+    ends: list[tuple[float, float]] = []
+    for w in walls:
+        ends.append((w["a"]["x"], w["a"]["y"]))
+        ends.append((w["b"]["x"], w["b"]["y"]))
+    unmatched = 0
+    tol2 = gap_tol_m * gap_tol_m
+    for i, (x, y) in enumerate(ends):
+        found = False
+        for j, (x2, y2) in enumerate(ends):
+            if i == j or i // 2 == j // 2:
+                continue
+            if (x - x2) ** 2 + (y - y2) ** 2 <= tol2:
+                found = True
+                break
+        if not found:
+            unmatched += 1
+    return unmatched <= 2
+
+
+def _outer_perimeter_ring_walls(
+    bgr: np.ndarray,
+    *,
+    mpp: float,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    foot: np.ndarray,
+    plan_style: str = "cad",
+) -> tuple[list[dict[str, Any]], bool, list[str]]:
+    """Continuous outer perimeter from morph-closed ROI ink / footprint contour.
+
+    1) Build style-aware ink inside footprint, morphological close.
+    2) Largest external footprint contour → snap vertices inward to ink.
+    3) approxPolyDP (smart epsilon) + H/V snap → closed ring wall segments.
+    Priority: long perimeter walls that overlap real wall ink (hand-trace level).
+    """
+    notes: list[str] = []
+    h, w = bgr.shape[:2]
+    if mpp <= 0 or foot.max() == 0:
+        return [], False, notes
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    marketing = plan_style == "marketing"
+    if marketing:
+        ink = (blur < 88).astype(np.uint8) * 255
+    else:
+        ink = ((blur > 25) & (blur < 175) & (hsv[:, :, 1] < 70)).astype(np.uint8) * 255
+    ink = cv2.bitwise_and(ink, foot)
+    kclose = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    ink_c = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, kclose, iterations=2 if marketing else 3)
+
+    # Prefer large external contour of morph-closed ink when it covers enough of footprint
+    foot_cnts, _ = cv2.findContours(foot, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not foot_cnts:
+        return [], False, notes
+    foot_cnt = max(foot_cnts, key=cv2.contourArea)
+    foot_a = float(cv2.contourArea(foot_cnt))
+    src = "foot"
+    base_cnt = foot_cnt
+    ink_cnts, _ = cv2.findContours(ink_c, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if ink_cnts:
+        ink_cnt = max(ink_cnts, key=cv2.contourArea)
+        if float(cv2.contourArea(ink_cnt)) >= foot_a * 0.35:
+            # Still refine from footprint for marketing (ink blob may hug furniture);
+            # CAD mid-gray fills often give a better outer ink contour.
+            if not marketing:
+                base_cnt = ink_cnt
+                src = "ink"
+
+    refined = _refine_contour_pts_to_ink(base_cnt, ink_c, max_search=30)
+    if len(refined) < 6:
+        notes.append("外周界輪廓頂點不足，略過 ring。")
+        return [], False, notes
+    refined_cnt = refined.reshape(-1, 1, 2).astype(np.int32)
+    peri = float(cv2.arcLength(refined_cnt, True))
+    if peri < 80:
+        return [], False, notes
+    best = refined_cnt
+    used_ef = 0.01
+    for ef in (0.003, 0.005, 0.007, 0.009, 0.012, 0.015, 0.02, 0.025):
+        ap = cv2.approxPolyDP(refined_cnt, ef * peri, True)
+        if 8 <= len(ap) <= 30:
+            best = ap
+            used_ef = ef
+            break
+        best = ap
+        used_ef = ef
+    pts = best.reshape(-1, 2).astype(np.float64)
+    snapped = _hv_snap_closed_polyline(pts)
+    walls: list[dict[str, Any]] = []
+    n = len(snapped)
+    for i in range(n):
+        a = snapped[i]
+        b = snapped[(i + 1) % n]
+        if i == n - 1 and abs(a[0] - snapped[0][0]) < 2 and abs(a[1] - snapped[0][1]) < 2:
+            continue
+        am = _px_to_m(float(a[0]), float(a[1]), height_px=h, mpp=mpp)
+        bm = _px_to_m(float(b[0]), float(b[1]), height_px=h, mpp=mpp)
+        # Force exact H/V in metres
+        if abs(am[0] - bm[0]) <= abs(am[1] - bm[1]):
+            x = 0.5 * (am[0] + bm[0])
+            am = (x, am[1])
+            bm = (x, bm[1])
+        else:
+            y = 0.5 * (am[1] + bm[1])
+            am = (am[0], y)
+            bm = (bm[0], y)
+        L = ((am[0] - bm[0]) ** 2 + (am[1] - bm[1]) ** 2) ** 0.5
+        if L < 0.45:
+            continue
+        # Soft ink support (perimeter may sit on thin stroke)
+        probe = {
+            "a": _vec(*am),
+            "b": _vec(*bm),
+        }
+        if not _wall_has_ink_support(probe, ink_c, height_px=h, mpp=mpp, min_frac=0.06):
+            # Still keep long outer edges — footprint ring is structural even if ink thin
+            if L < 1.2:
+                continue
+        walls.append(
+            {
+                "id": f"w-ring-{len(walls)+1}",
+                "a": _vec(*am),
+                "b": _vec(*bm),
+                "thicknessM": WALL_THICKNESS_M,
+                "thicknessAssumed": True,
+                "heightM": CEILING_HEIGHT_M,
+            }
+        )
+    walls, _ = _merge_collinear_walls(
+        walls, min_len_m=0.50, gap_tol_m=1.05, axis_tol_m=0.28
+    )
+    walls = _close_ring_endpoint_gaps(walls, gap_tol_m=0.95)
+    walls = _bridge_ring_corners(walls, gap_tol_m=1.35)
+    walls = _largest_connected_wall_component(walls, gap_tol_m=0.70)
+    # Re-id after merge / gap close / bridges / CC
+    for i, wseg in enumerate(walls):
+        wseg["id"] = f"w-ring-{i+1}"
+    closed = _walls_form_closed_ring(walls, gap_tol_m=0.70)
+    # If ink contour failed to close, retry once from footprint (often cleaner outer hull)
+    if not closed and src == "ink":
+        refined_f = _refine_contour_pts_to_ink(foot_cnt, ink_c, max_search=30)
+        if len(refined_f) >= 6:
+            rc = refined_f.reshape(-1, 1, 2).astype(np.int32)
+            peri_f = float(cv2.arcLength(rc, True))
+            best_f = rc
+            ef_f = 0.01
+            for ef in (0.003, 0.005, 0.007, 0.009, 0.012, 0.015, 0.02, 0.025):
+                ap = cv2.approxPolyDP(rc, ef * peri_f, True)
+                if 8 <= len(ap) <= 30:
+                    best_f = ap
+                    ef_f = ef
+                    break
+                best_f = ap
+                ef_f = ef
+            pts_f = best_f.reshape(-1, 2).astype(np.float64)
+            snapped_f = _hv_snap_closed_polyline(pts_f)
+            walls_f: list[dict[str, Any]] = []
+            nf = len(snapped_f)
+            for i in range(nf):
+                a = snapped_f[i]
+                b = snapped_f[(i + 1) % nf]
+                if i == nf - 1 and abs(a[0] - snapped_f[0][0]) < 2 and abs(a[1] - snapped_f[0][1]) < 2:
+                    continue
+                am = _px_to_m(float(a[0]), float(a[1]), height_px=h, mpp=mpp)
+                bm = _px_to_m(float(b[0]), float(b[1]), height_px=h, mpp=mpp)
+                if abs(am[0] - bm[0]) <= abs(am[1] - bm[1]):
+                    x = 0.5 * (am[0] + bm[0])
+                    am, bm = (x, am[1]), (x, bm[1])
+                else:
+                    y = 0.5 * (am[1] + bm[1])
+                    am, bm = (am[0], y), (bm[0], y)
+                L = ((am[0] - bm[0]) ** 2 + (am[1] - bm[1]) ** 2) ** 0.5
+                if L < 0.45:
+                    continue
+                walls_f.append(
+                    {
+                        "id": f"w-ring-{len(walls_f)+1}",
+                        "a": _vec(*am),
+                        "b": _vec(*bm),
+                        "thicknessM": WALL_THICKNESS_M,
+                        "thicknessAssumed": True,
+                        "heightM": CEILING_HEIGHT_M,
+                    }
+                )
+            walls_f, _ = _merge_collinear_walls(
+                walls_f, min_len_m=0.50, gap_tol_m=1.05, axis_tol_m=0.28
+            )
+            walls_f = _close_ring_endpoint_gaps(walls_f, gap_tol_m=0.95)
+            walls_f = _bridge_ring_corners(walls_f, gap_tol_m=1.35)
+            walls_f = _largest_connected_wall_component(walls_f, gap_tol_m=0.70)
+            for i, wseg in enumerate(walls_f):
+                wseg["id"] = f"w-ring-{i+1}"
+            if _walls_form_closed_ring(walls_f, gap_tol_m=0.70) and len(walls_f) >= 4:
+                walls = walls_f
+                closed = True
+                src = "foot-retry"
+                used_ef = ef_f
+    tot = sum(_seg_length_m(w) for w in walls)
+    notes.append(
+        f"外周界 ring：src={src} approxε={used_ef} 段={len(walls)} Σ≈{tot:.1f}m "
+        f"{'閉合' if closed else '未完全閉合'}。"
+    )
+    return walls, closed, notes
+
+
+
+def _dedupe_parallel_walls(
+    walls: list[dict[str, Any]],
+    *,
+    axis_tol_m: float = 0.32,
+    overlap_slack_m: float = 0.30,
+) -> list[dict[str, Any]]:
+    """Keep longer wall when two H/V segments are nearly collinear and overlap.
+
+    Never collapse two ring segments against each other (adjacent corners must survive).
+    Ring always wins over a parallel non-ring duplicate.
+    """
+    if len(walls) < 2:
+        return walls
+    walls = sorted(walls, key=_seg_length_m, reverse=True)
+    kept: list[dict[str, Any]] = []
+    for w in walls:
+        w_ring = "ring" in str(w.get("id", ""))
+        mx = (w["a"]["x"] + w["b"]["x"]) / 2
+        my = (w["a"]["y"] + w["b"]["y"]) / 2
+        wh = abs(w["a"]["y"] - w["b"]["y"]) < 0.28
+        dup = False
+        for k in kept:
+            k_ring = "ring" in str(k.get("id", ""))
+            # Adjacent outer-ring edges: never treat as duplicates
+            if w_ring and k_ring:
+                continue
+            kh = abs(k["a"]["y"] - k["b"]["y"]) < 0.28
+            if wh != kh:
+                continue
+            # Require real overlap (not mere near-touch); slack only for tiny float gaps
+            slack = 0.08 if (w_ring or k_ring) else overlap_slack_m
+            if wh:
+                if abs(my - (k["a"]["y"] + k["b"]["y"]) / 2) > axis_tol_m:
+                    continue
+                wt0, wt1 = sorted([w["a"]["x"], w["b"]["x"]])
+                kt0, kt1 = sorted([k["a"]["x"], k["b"]["x"]])
+                if min(wt1, kt1) - max(wt0, kt0) > -slack:
+                    if w_ring and not k_ring:
+                        kept[kept.index(k)] = w
+                    dup = True
+                    break
+            else:
+                if abs(mx - (k["a"]["x"] + k["b"]["x"]) / 2) > axis_tol_m:
+                    continue
+                wt0, wt1 = sorted([w["a"]["y"], w["b"]["y"]])
+                kt0, kt1 = sorted([k["a"]["y"], k["b"]["y"]])
+                if min(wt1, kt1) - max(wt0, kt0) > -slack:
+                    if w_ring and not k_ring:
+                        kept[kept.index(k)] = w
+                    dup = True
+                    break
+        if not dup:
+            kept.append(w)
+    return kept
+
+
+def _drop_walls_overlapping_ring(
+    walls: list[dict[str, Any]],
+    ring: list[dict[str, Any]],
+    *,
+    dist_tol_m: float = 0.38,
+) -> list[dict[str, Any]]:
+    """Drop non-ring walls that duplicate a ring edge (midpoint near + parallel)."""
+    if not ring:
+        return walls
+    kept: list[dict[str, Any]] = []
+    for w in walls:
+        wid = str(w.get("id", ""))
+        if "ring" in wid:
+            kept.append(w)
+            continue
+        mx = (w["a"]["x"] + w["b"]["x"]) / 2
+        my = (w["a"]["y"] + w["b"]["y"]) / 2
+        wh = abs(w["a"]["y"] - w["b"]["y"]) < 0.28
+        dup = False
+        for r in ring:
+            rh = abs(r["a"]["y"] - r["b"]["y"]) < 0.28
+            if wh != rh:
+                continue
+            d = _point_seg_dist_m(
+                mx, my, r["a"]["x"], r["a"]["y"], r["b"]["x"], r["b"]["y"]
+            )
+            if d <= dist_tol_m:
+                # also require span overlap
+                if wh:
+                    wt0, wt1 = sorted([w["a"]["x"], w["b"]["x"]])
+                    rt0, rt1 = sorted([r["a"]["x"], r["b"]["x"]])
+                    if min(wt1, rt1) - max(wt0, rt0) > -0.25:
+                        dup = True
+                        break
+                else:
+                    wt0, wt1 = sorted([w["a"]["y"], w["b"]["y"]])
+                    rt0, rt1 = sorted([r["a"]["y"], r["b"]["y"]])
+                    if min(wt1, rt1) - max(wt0, rt0) > -0.25:
+                        dup = True
+                        break
+        if not dup:
+            kept.append(w)
+    return kept
 
 
 def _structural_walls_from_ink(
@@ -1735,7 +2373,11 @@ def _opencv_rooms_and_walls(
             )
             rooms, room_polys_px = merged_rooms, merged_polys
 
-    # Primary walls: structural dark-ink Hough (straighter than room edges)
+    # Primary walls: continuous outer ring + structural dark-ink partitions
+    ring_walls, ring_closed, ring_notes = _outer_perimeter_ring_walls(
+        bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot, plan_style=plan_style,
+    )
+    notes.extend(ring_notes)
     walls, ink_struct = _structural_walls_from_ink(
         bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot,
         max_add=40, plan_style=plan_style,
@@ -1743,7 +2385,22 @@ def _opencv_rooms_and_walls(
     # Prefer structural ink for support tests / barriers when richer
     if int(ink_struct.sum() // 255) > int(ink.sum() // 255):
         ink = ink_struct
-    notes.append(f"深色墨跡結構牆段 {len(walls)}。")
+    # Drop ink fragments that duplicate the outer ring; keep major interior partitions
+    before_ink = len(walls)
+    walls = _drop_walls_overlapping_ring(walls, ring_walls, dist_tol_m=0.55)
+    notes.append(
+        f"深色墨跡結構牆段 {before_ink}→{len(walls)}（去重 ring 後；內隔間保留）。"
+    )
+    if ring_walls:
+        walls = ring_walls + walls
+        notes.append(
+            f"併入外周界 ring {len(ring_walls)} 段"
+            f"（{'已閉合' if ring_closed else '未閉合'}）。"
+        )
+    before_dd = len(walls)
+    walls = _dedupe_parallel_walls(walls, axis_tol_m=0.34, overlap_slack_m=0.35)
+    if len(walls) < before_dd:
+        notes.append(f"平行牆去重：{before_dd}→{len(walls)}。")
 
     # Room-edge walls ONLY as last resort when ink walls are sparse.
     # Jagged free-space contours are the #1 source of transecting junk walls.
@@ -1880,14 +2537,14 @@ def _opencv_rooms_and_walls(
             w
             for w in walls
             if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.08)
-            or str(w.get("id", "")).startswith(("w-room", "w-m-", "w-ink"))
+            or str(w.get("id", "")).startswith(("w-room", "w-m-", "w-ink", "w-ring"))
         ]
     else:
         kept_ink = [
             w
             for w in walls
             if _wall_has_ink_support(w, ink, height_px=h, mpp=mpp, min_frac=0.08)
-            or str(w.get("id", "")).startswith(("w-ink", "w-skel", "w-m-"))
+            or str(w.get("id", "")).startswith(("w-ink", "w-skel", "w-m-", "w-ring"))
         ]
         # CAD: if ink-only is too sparse, keep long near-axis room/skel edges
         if len(kept_ink) < 10:
@@ -1924,8 +2581,11 @@ def _opencv_rooms_and_walls(
     notes.extend(tx_notes)
 
     # Prefer structural / long / axis-aligned when capping (coverage > aggressive cut)
-    max_walls = 36
+    max_walls = 42
     if len(walls) > max_walls:
+        ring_keep = [w for w in walls if "ring" in str(w.get("id", ""))]
+        rest = [w for w in walls if "ring" not in str(w.get("id", ""))]
+
         def _wall_keep_key(wseg: dict[str, Any]) -> tuple:
             wid = str(wseg.get("id", ""))
             L = _seg_length_m(wseg)
@@ -1943,8 +2603,11 @@ def _opencv_rooms_and_walls(
                 prio = 1
             return (prio, -align, -L)
 
-        walls = sorted(walls, key=_wall_keep_key)[:max_walls]
-        notes.append(f"牆段過多，已截斷至 {max_walls} 條（優先結構／近軸長牆）。")
+        budget = max(0, max_walls - len(ring_keep))
+        walls = ring_keep + sorted(rest, key=_wall_keep_key)[:budget]
+        notes.append(
+            f"牆段過多，已截斷至 {len(walls)} 條（保留 ring {len(ring_keep)}＋墨跡／近軸）。"
+        )
 
     if not walls:
         notes.append(
@@ -3145,11 +3808,12 @@ def run_yolo_detect(
     tx_ratio = 0.40 if len(walls) < 12 else 0.32
     walls, tx_notes = _filter_transecting_walls(walls, rooms, max_ratio=tx_ratio)
     notes.extend(tx_notes)
-    # Drop remaining non-structural short diagonals
+    # Drop remaining non-structural short diagonals (never drop outer ring)
     walls = [
         w
         for w in walls
-        if _is_structural_edge(
+        if "ring" in str(w.get("id", ""))
+        or _is_structural_edge(
             w["a"]["x"], w["a"]["y"], w["b"]["x"], w["b"]["y"], min_len=0.55
         )
     ]
@@ -3158,13 +3822,30 @@ def run_yolo_detect(
         walls, bgr, mpp=mpp, content_roi=(x0, y0, x1, y1), plan_style=plan_style
     )
     notes.extend(peri_ext_notes)
+    # Re-inject outer ring so later merges/caps cannot erase the continuous perimeter
+    foot_final = _footprint_mask(bgr, x0, y0, x1, y1)
+    ring2, ring2_closed, ring2_notes = _outer_perimeter_ring_walls(
+        bgr, mpp=mpp, x0=x0, y0=y0, x1=x1, y1=y1, foot=foot_final, plan_style=plan_style,
+    )
+    if ring2:
+        # Replace any prior ring segments with the fresh closed ring (avoid double-count)
+        walls = [w for w in walls if "ring" not in str(w.get("id", ""))]
+        walls = _drop_walls_overlapping_ring(walls, ring2, dist_tol_m=0.55)
+        walls = ring2 + walls
+        walls = _dedupe_parallel_walls(walls, axis_tol_m=0.34, overlap_slack_m=0.35)
+        notes.append(
+            f"最終重申外周界 ring {len(ring2)} 段（{'閉合' if ring2_closed else '未閉合'}）。"
+        )
     # Wall-constrained room polygons (after structural walls settle)
     rooms, room_wall_notes = _constrain_rooms_by_walls(
         rooms, walls, mpp=mpp, height_px=h, content_roi=(x0, y0, x1, y1)
     )
     notes.extend(room_wall_notes)
     # Coverage-first cap: keep long near-axis structural walls (was 22; too aggressive)
-    if len(walls) > 36:
+    if len(walls) > 42:
+        ring_keep = [w for w in walls if "ring" in str(w.get("id", ""))]
+        rest = [w for w in walls if "ring" not in str(w.get("id", ""))]
+
         def _wall_keep_key(w: dict[str, Any]) -> tuple:
             wid = str(w.get("id", ""))
             L = _seg_length_m(w)
@@ -3183,8 +3864,11 @@ def run_yolo_detect(
                 prio = 1
             return (prio, -align, -L)
 
-        walls = sorted(walls, key=_wall_keep_key)[:36]
-        notes.append("牆段過多，最終截斷至 36（優先墨跡／近軸長牆，覆蓋優先）。")
+        budget = max(0, 42 - len(ring_keep))
+        walls = ring_keep + sorted(rest, key=_wall_keep_key)[:budget]
+        notes.append(
+            f"牆段過多，最終截斷至 {len(walls)}（保留全部 ring {len(ring_keep)}＋墨跡／近軸）。"
+        )
 
     def _opening_len(op: dict[str, Any]) -> float:
         a, b = op["opening"]["a"], op["opening"]["b"]
@@ -3321,6 +4005,14 @@ def run_yolo_detect(
             f"開口貼牆：門 snap {n_snap_d}/drop {n_drop_d}，"
             f"窗 snap {n_snap_w}/drop {n_drop_w}。"
         )
+
+    # Flush openings onto perimeter / ring walls (align glyph to outer ink)
+    doors, n_flush_d = _flush_openings_to_perimeter_walls(doors, walls, max_dist_m=0.80)
+    windows, n_flush_w = _flush_openings_to_perimeter_walls(
+        windows, walls, max_dist_m=0.90
+    )
+    if n_flush_d or n_flush_w:
+        notes.append(f"開口 flush 外周界：門 {n_flush_d}、窗 {n_flush_w}。")
 
     # FORBIDDEN: heuristic perimeter windows (even when model wins exist).
     # Only model detections (YOLO / CubiCasa) and snapped gap openings remain.
