@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -15,6 +16,21 @@ DETECT_MODE = os.environ.get("DETECT_MODE", "mock").strip().lower() or "mock"
 if DETECT_MODE not in ("mock", "yolo"):
     DETECT_MODE = "mock"
 
+_OPENAPI_PATH = Path(__file__).resolve().parent / "openapi.yaml"
+
+
+def _load_openapi_yaml() -> dict:
+    """Load curated OpenAPI so /docs shows non-empty response examples."""
+    try:
+        import yaml  # PyYAML (pulled in via ultralytics; also listed in requirements)
+    except ImportError as e:  # pragma: no cover
+        raise RuntimeError(
+            "需要 PyYAML 才能掛載 openapi.yaml；請 pip install -r requirements.txt"
+        ) from e
+    with _OPENAPI_PATH.open(encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
 app = FastAPI(
     title="Home Planner Detect API",
     version="0.2.0",
@@ -25,6 +41,61 @@ app = FastAPI(
         "falls back to mock if the model fails to load."
     ),
 )
+
+
+def _resolve_example_refs(schema: dict) -> dict:
+    """Inline components.examples $ref so /docs shows non-empty examples without client resolve."""
+    examples = (schema.get("components") or {}).get("examples") or {}
+    paths = schema.get("paths") or {}
+    for path_item in paths.values():
+        for op in path_item.values():
+            if not isinstance(op, dict):
+                continue
+            for resp in (op.get("responses") or {}).values():
+                if not isinstance(resp, dict):
+                    continue
+                content = resp.get("content") or {}
+                for media in content.values():
+                    if not isinstance(media, dict):
+                        continue
+                    ex = media.get("examples")
+                    if not isinstance(ex, dict):
+                        continue
+                    for key, val in list(ex.items()):
+                        if not isinstance(val, dict):
+                            continue
+                        ref = val.get("$ref")
+                        if isinstance(ref, str) and ref.startswith("#/components/examples/"):
+                            name = ref.rsplit("/", 1)[-1]
+                            if name in examples:
+                                ex[key] = dict(examples[name])
+    return schema
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    if _OPENAPI_PATH.is_file():
+        schema = _resolve_example_refs(_load_openapi_yaml())
+        # Keep runtime title/version in sync with FastAPI app
+        schema.setdefault("info", {})
+        schema["info"]["title"] = app.title
+        schema["info"]["version"] = app.version
+        app.openapi_schema = schema
+        return app.openapi_schema
+    # Fallback: auto schema (examples may be empty)
+    from fastapi.openapi.utils import get_openapi
+
+    app.openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 app.add_middleware(
     CORSMiddleware,

@@ -38,15 +38,32 @@
 
 偵測煙測：`npm run test:detect`（使用 `src/import-plan/fixtures`）。
 
-### 本機 Detect 後端（FastAPI：mock 或 YOLO）
+### 本機 Detect 後端（FastAPI：mock 或 YOLO）— 建議本機 E2E
+
+一鍵啟動後端（venv／依賴／缺權重則下載／`DETECT_MODE=yolo`）：
+
+```bash
+./scripts/dev-local.sh
+# → http://127.0.0.1:8000/health  /docs（掛載 openapi.yaml 範例）
+```
+
+前端（另一個終端）：
+
+```bash
+echo 'VITE_DETECT_API_URL=http://127.0.0.1:8000' > .env.local
+npm install && npm run dev
+# → http://127.0.0.1:43123/home-planner/
+# 匯入精靈徽章應顯示「後端 YOLO」
+```
 
 - 目錄：`backend/`（契約見 `backend/openapi.yaml`、`backend/README.md`）。
 - `POST /api/v1/detect`：multipart 上傳影像 → 結構化 JSON（牆／門／窗／房間；公尺、左下原點）。
-- 模式：`DETECT_MODE=mock`（預設，決定性樣品戶型）或 `DETECT_MODE=yolo`（ultralytics seg + OpenCV；無微調權重時為 best-effort，失敗回退 mock）。
-- 前端：`VITE_DETECT_API_URL` **預設關閉**（unset／空／`off`），避免 GitHub Pages 對 localhost 空等。本機開發在 `.env.local` 設 `VITE_DETECT_API_URL=http://127.0.0.1:8000`；健康檢查約 0.4s（後端掛掉即回退）；偵測 POST 逾時約 30s（YOLO），失敗即回退啟發式／AI。
+- 模式：`DETECT_MODE=mock`（預設，決定性樣品戶型）或 `DETECT_MODE=yolo`（FloorCAD／自備 `floorplan-seg.pt` + OpenCV 後處理；失敗回退 mock）。
+- 可選比例：`DETECT_SCALE_M=<外框寬公尺>`（否則依圖幅啟發式；`scaleTrusted` 恒為 false）。
+- 前端：`VITE_DETECT_API_URL` **預設關閉**（unset／空／`off`），避免 GitHub Pages 對 localhost 空等。健康檢查約 0.4s；偵測 POST 逾時約 30s。
 - UI 徽章：「後端 YOLO」／「後端 mock」／「啟發式」／「AI+規則」。
-- 啟動 mock：`cd backend && source .venv/bin/activate && uvicorn main:app --reload --port 8000`
-- 啟動 YOLO：先 `pip install -r requirements.txt && python scripts/download_model.py`，再 `DETECT_MODE=yolo uvicorn main:app --reload --port 8000`
+
+**誠實限制**：公開權重偏 CAD 符號（牆／門／窗），**不是**完整房間分割；行銷風格 `*-b.jpg` 以 OpenCV 房間＋牆合併＋缺口／連通性補門為主，標註需人工疊圖確認。自有資料微調與 AWS 部署見 [TODO.md](TODO.md)。
 
 ### AI 輔助辨識（架構先行）
 

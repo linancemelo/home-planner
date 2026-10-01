@@ -9,9 +9,13 @@
 | `mock`（預設） | 決定性樣品兩室布局；`mock: true` |
 | `yolo` | ultralytics YOLO-seg + OpenCV 後處理；`mock: false`。載入／推論失敗則回退 mock 並在 `notes` 說明 |
 
-可選：`DETECT_MODEL_PATH=/path/to/weights.pt`（預設尋找 `models/floorplan-seg.pt` → `yolo11n-seg.pt` → `yolov8n-seg.pt`）。
+可選：
+- `DETECT_MODEL_PATH=/path/to/weights.pt`（預設尋找 `models/floorplan-seg.pt` → `yolo11n-seg.pt` → `yolov8n-seg.pt`）
+- `DETECT_SCALE_M=<公尺>`：假設外框寬，覆寫比例啟發式（`scaleTrusted` 仍為 false）
 
-> **誠實限制**：公開倉庫未附平面圖微調權重。預訓練 COCO seg **沒有** room/wall/door/window；此時 YOLO 遮罩僅 best-effort，結構主要靠 OpenCV（連通區域房間 + Hough／多邊形邊牆段 + 缺口門窗啟發式）。要準確請自行微調並放入 `models/floorplan-seg.pt`。
+Swagger：啟動後 `/docs` 掛載本目錄 `openapi.yaml`（含 mock 回應範例）。
+
+> **誠實限制**：`scripts/download_model.py` 可下載公開 FloorCAD 符號 seg（寫入 `floorplan-seg.pt`；wall/door/window 等，**無** room 類）。房間與多數行銷平面圖結構仍靠 OpenCV（連通區域房間 + 共線牆合併 + 缺口／ensureRoomAccess 補門）。要準確請用自有資料微調並覆寫 `floorplan-seg.pt`。
 
 ## 契約
 
@@ -30,6 +34,14 @@
 
 ## 本機執行
 
+從倉庫根目錄一鍵（建議）：
+
+```bash
+./scripts/dev-local.sh
+```
+
+或手動：
+
 ```bash
 cd backend
 python3 -m venv .venv
@@ -39,7 +51,7 @@ pip install -r requirements.txt
 # mock（預設）
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
-# YOLO
+# YOLO（優先下載 FloorCAD → models/floorplan-seg.pt）
 python scripts/download_model.py
 DETECT_MODE=yolo uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
