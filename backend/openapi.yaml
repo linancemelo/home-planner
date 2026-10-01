@@ -1,16 +1,17 @@
 openapi: 3.1.0
 info:
   title: Home Planner Detect API
-  version: 0.1.0-mock
+  version: 0.2.0
   description: |
     Floor-plan image → structured detect JSON.
-    **Current stage: mock only** (deterministic sample layout). YOLO seg + OpenCV later.
+    Modes via env `DETECT_MODE=mock|yolo` (default mock). YOLO path uses
+    ultralytics seg + OpenCV post-process; falls back to mock if model missing.
 
     Units: **metres**. Coordinate origin: **bottom-left** (Y-up), matching
     frontend `Floorplan` / `src/import-plan/floorplan.ts`.
 servers:
   - url: http://127.0.0.1:8000
-    description: Local mock
+    description: Local detect API
 paths:
   /health:
     get:
@@ -24,7 +25,7 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
-                  mode: { type: string, example: mock }
+                  mode: { type: string, enum: [mock, yolo], example: mock }
   /api/v1/detect:
     post:
       summary: Detect walls/doors/windows/rooms from floor-plan image
@@ -172,30 +173,204 @@ components:
         notes:
           type: array
           items: { type: string }
-        mock: { type: boolean, description: true while YOLO not wired }
+        mock: { type: boolean, description: true when mock path used; false for YOLO }
+        mode: { type: string, enum: [mock, yolo], description: Detection path used }
   examples:
     MockDetect:
-      summary: Deterministic mock two-room layout
+      summary: Deterministic mock two-room layout (same as mock_layout / example-detect-response.json)
       value:
-        version: 1
-        kind: detect-result
-        meta:
-          sourceName: sample.png
-          imageWidthPx: 800
-          imageHeightPx: 600
-          metersPerPixel: 0.011905
-          scaleTrusted: false
-          coordinateOrigin: bottom-left
-          ceilingHeightM: 2.8
-          ceilingHeightAssumed: true
-          detectionConfidence: 0.893
-          units: meters
+          version: 1
+          kind: detect-result
+          meta:
+            sourceName: sample.png
+            imageWidthPx: 800
+            imageHeightPx: 600
+            metersPerPixel: 0.011905
+            scaleTrusted: false
+            coordinateOrigin: bottom-left
+            ceilingHeightM: 2.8
+            ceilingHeightAssumed: true
+            detectionConfidence: 0.893
+            units: meters
+            notes:
+              - "後端 mock 回傳（尚未執行 YOLO／OpenCV）。"
+              - "單位：公尺；座標原點：圖面左下（bottom-left）。"
+              - "比例由影像寬度反推 metersPerPixel≈0.01190（scaleTrusted=false）。"
+              - "天花板假設 2.8 m；牆厚假設 0.12 m；窗台假設 0.9 m。"
+              - "房間為 mock 兩室（客廳／臥室）；真實分割之後以 YOLO seg 取代。"
+          walls:
+            -
+              id: w-south
+              a:
+                x: 0.7619
+                y: 0.5714
+              b:
+                x: 8.7619
+                y: 0.5714
+              thicknessM: 0.12
+              thicknessAssumed: true
+              heightM: 2.8
+            -
+              id: w-east
+              a:
+                x: 8.7619
+                y: 0.5714
+              b:
+                x: 8.7619
+                y: 6.0714
+              thicknessM: 0.12
+              thicknessAssumed: true
+              heightM: 2.8
+            -
+              id: w-north
+              a:
+                x: 8.7619
+                y: 6.0714
+              b:
+                x: 0.7619
+                y: 6.0714
+              thicknessM: 0.12
+              thicknessAssumed: true
+              heightM: 2.8
+            -
+              id: w-west
+              a:
+                x: 0.7619
+                y: 6.0714
+              b:
+                x: 0.7619
+                y: 0.5714
+              thicknessM: 0.12
+              thicknessAssumed: true
+              heightM: 2.8
+            -
+              id: w-partition-s
+              a:
+                x: 4.9619
+                y: 0.5714
+              b:
+                x: 4.9619
+                y: 2.5714
+              thicknessM: 0.12
+              thicknessAssumed: true
+              heightM: 2.8
+            -
+              id: w-partition-n
+              a:
+                x: 4.9619
+                y: 3.4714
+              b:
+                x: 4.9619
+                y: 6.0714
+              thicknessM: 0.12
+              thicknessAssumed: true
+              heightM: 2.8
+          doors:
+            -
+              id: d-inner-1
+              kind: swing
+              wallId: w-partition-s
+              opening:
+                a:
+                  x: 4.9619
+                  y: 2.5714
+                b:
+                  x: 4.9619
+                  y: 3.4714
+              confidence: 0.92
+              swing:
+                hinge:
+                  x: 4.9619
+                  y: 2.5714
+                leafLengthM: 0.9
+                openDirection: cw
+                arcQuarter: true
+            -
+              id: d-entry-1
+              kind: swing
+              wallId: w-south
+              opening:
+                a:
+                  x: 1.9619
+                  y: 0.5714
+                b:
+                  x: 2.8619
+                  y: 0.5714
+              confidence: 0.88
+              swing:
+                hinge:
+                  x: 1.9619
+                  y: 0.5714
+                leafLengthM: 0.9
+                openDirection: ccw
+                arcQuarter: true
+          windows:
+            -
+              id: win-west-1
+              wallId: w-west
+              opening:
+                a:
+                  x: 0.7619
+                  y: 2.0714
+                b:
+                  x: 0.7619
+                  y: 4.0714
+              confidence: 0.9
+              sillHeightM: 0.9
+              sillHeightAssumed: true
+            -
+              id: win-east-1
+              wallId: w-east
+              opening:
+                a:
+                  x: 8.7619
+                  y: 2.3714
+                b:
+                  x: 8.7619
+                  y: 4.3714
+              confidence: 0.86
+              sillHeightM: 0.9
+              sillHeightAssumed: true
+          rooms:
+            -
+              id: room-living
+              type: "客廳"
+              vertices:
+                -
+                  x: 0.8219
+                  y: 0.6314
+                -
+                  x: 4.9019
+                  y: 0.6314
+                -
+                  x: 4.9019
+                  y: 6.0114
+                -
+                  x: 0.8219
+                  y: 6.0114
+              confidence: 0.91
+            -
+              id: room-bedroom
+              type: "臥室"
+              vertices:
+                -
+                  x: 5.0219
+                  y: 0.6314
+                -
+                  x: 8.7019
+                  y: 0.6314
+                -
+                  x: 8.7019
+                  y: 6.0114
+                -
+                  x: 5.0219
+                  y: 6.0114
+              confidence: 0.89
+          confidence: 0.893
           notes:
-            - 後端 mock 回傳（尚未執行 YOLO／OpenCV）。
-        walls: []
-        doors: []
-        windows: []
-        rooms: []
-        confidence: 0.893
-        notes: []
-        mock: true
+            - "後端 mock 回傳（尚未執行 YOLO／OpenCV）。"
+            - "單位：公尺；座標原點：圖面左下（bottom-left）。"
+            - "比例由影像寬度反推 metersPerPixel≈0.01190（scaleTrusted=false）。"
+            - "天花板假設 2.8 m；牆厚假設 0.12 m；窗台假設 0.9 m。"
+            - "房間為 mock 兩室（客廳／臥室）；真實分割之後以 YOLO seg 取代。"
+          mock: true

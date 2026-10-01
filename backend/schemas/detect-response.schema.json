@@ -116,6 +116,16 @@
     },
     "mock": {
       "type": "boolean"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "mock",
+        "yolo"
+      ]
+    },
+    "fallbackFromYolo": {
+      "type": "boolean"
     }
   },
   "$defs": {

@@ -1,3 +1,7 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-python-multipart>=0.0.12
+fastapi>=0.115.0,<1
+uvicorn[standard]>=0.32.0,<1
+python-multipart>=0.0.12,<1
+# YOLO + OpenCV (DETECT_MODE=yolo)
+opencv-python-headless>=4.10.0,<4.11
+ultralytics>=8.3.0,<8.5
+numpy>=1.26.0,<3

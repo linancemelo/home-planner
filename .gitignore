@@ -27,3 +27,8 @@ dist-ssr
 __pycache__/
 *.pyc
 backend/.venv/
+
+# YOLO weights (download via backend/scripts/download_model.py)
+backend/models/*.pt
+backend/models/*.pth
+backend/models/*.onnx

@@ -22,7 +22,9 @@ export function mapDetectResponseToFloorplan(raw: DetectApiResponse): BackendDet
   const notes = [
     ...(raw.notes ?? []),
     ...(raw.meta.notes ?? []),
-    ...(raw.mock ? ["來源：本機 Detect API（mock，尚未 YOLO）。"] : ["來源：本機 Detect API。"]),
+    ...(raw.mode === "yolo" || raw.mock === false
+      ? ["來源：本機 Detect API（YOLO＋OpenCV）。"]
+      : ["來源：本機 Detect API（mock）。"]),
   ]
   // dedupe
   const seen = new Set<string>()

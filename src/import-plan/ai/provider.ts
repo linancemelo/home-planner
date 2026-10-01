@@ -20,7 +20,7 @@ export interface FloorplanAiProvider {
   propose(input: FloorplanAiProposeInput): Promise<AiFloorplanProposal | null>
 }
 
-export type AssembleUiMode = "heuristic" | "ai+rules" | "backend"
+export type AssembleUiMode = "heuristic" | "ai+rules" | "backend-mock" | "backend-yolo"
 
 export function modeFromProvider(provider: FloorplanAiProvider, usedAi: boolean): AssembleUiMode {
   return usedAi && provider.isConfigured() ? "ai+rules" : "heuristic"

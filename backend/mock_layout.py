@@ -204,4 +204,5 @@ def build_mock_detect_response(
         "confidence": overall,
         "notes": notes,
         "mock": True,
+        "mode": "mock",
     }

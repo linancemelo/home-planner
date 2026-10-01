@@ -38,12 +38,15 @@
 
 偵測煙測：`npm run test:detect`（使用 `src/import-plan/fixtures`）。
 
-### 本機 Detect 後端（FastAPI mock）
+### 本機 Detect 後端（FastAPI：mock 或 YOLO）
 
 - 目錄：`backend/`（契約見 `backend/openapi.yaml`、`backend/README.md`）。
-- `POST /api/v1/detect`：multipart 上傳影像 → **完整**結構化 JSON（牆／門／窗／房間多邊形；公尺、左下原點）。**目前為決定性 mock，尚未 YOLO。**
-- 前端：`VITE_DETECT_API_URL`（預設 `http://127.0.0.1:8000`；設 `off` 關閉）。匯入精靈優先呼叫後端，失敗回退啟發式／AI。
-- 啟動：`cd backend && source .venv/bin/activate && uvicorn main:app --reload --port 8000`
+- `POST /api/v1/detect`：multipart 上傳影像 → 結構化 JSON（牆／門／窗／房間；公尺、左下原點）。
+- 模式：`DETECT_MODE=mock`（預設，決定性樣品戶型）或 `DETECT_MODE=yolo`（ultralytics seg + OpenCV；無微調權重時為 best-effort，失敗回退 mock）。
+- 前端：`VITE_DETECT_API_URL` **預設關閉**（unset／空／`off`），避免 GitHub Pages 對 localhost 空等。本機開發在 `.env.local` 設 `VITE_DETECT_API_URL=http://127.0.0.1:8000`；健康檢查約 0.4s（後端掛掉即回退）；偵測 POST 逾時約 30s（YOLO），失敗即回退啟發式／AI。
+- UI 徽章：「後端 YOLO」／「後端 mock」／「啟發式」／「AI+規則」。
+- 啟動 mock：`cd backend && source .venv/bin/activate && uvicorn main:app --reload --port 8000`
+- 啟動 YOLO：先 `pip install -r requirements.txt && python scripts/download_model.py`，再 `DETECT_MODE=yolo uvicorn main:app --reload --port 8000`
 
 ### AI 輔助辨識（架構先行）
 

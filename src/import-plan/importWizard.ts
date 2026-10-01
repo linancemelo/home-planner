@@ -2,10 +2,10 @@
  * 「從平面圖建立」wizard helpers (繁中).
  * DOM lives in the studio shell; this module drives detect → overlay → confirm.
  *
- * Path priority when VITE_DETECT_API_URL is set (default http://127.0.0.1:8000):
- *   1) Backend mock Detect API → full Floorplan JSON
+ * Path priority when VITE_DETECT_API_URL is set (e.g. http://127.0.0.1:8000 in .env.local):
+ *   1) Backend Detect API (mock or YOLO) → full Floorplan JSON
  *   2) On failure: heuristic detect → (optional) AI proposal → assemble
- * Set VITE_DETECT_API_URL=off (or empty) to skip backend and stay offline.
+ * Unset / empty / "off" skips backend (default for Pages builds).
  */
 import { detectFloorplan } from "./detect/pipeline.ts"
 import { imageElementToSource, loadImageElement } from "./load-image.ts"
@@ -33,19 +33,28 @@ export type ImportWizardCallbacks = {
 }
 
 function modeBadgeLabel(mode: AssembleUiMode): string {
-  if (mode === "backend") return "後端 mock"
+  if (mode === "backend-yolo") return "後端 YOLO"
+  if (mode === "backend-mock") return "後端 mock"
   if (mode === "ai+rules") return "AI+規則"
   return "啟發式"
 }
 
 function modeBadgeTitle(mode: AssembleUiMode): string {
-  if (mode === "backend") {
-    return "本機 Detect API（mock JSON；尚未 YOLO）。失敗時會回退啟發式／AI。"
+  if (mode === "backend-yolo") {
+    return "本機 Detect API（YOLO＋OpenCV）。失敗時會回退啟發式／AI。"
+  }
+  if (mode === "backend-mock") {
+    return "本機 Detect API（mock JSON）。失敗時會回退啟發式／AI。"
   }
   if (mode === "ai+rules") {
     return "已設定 AI 金鑰：提案 + 規則組裝（非最終 Floorplan JSON）"
   }
   return "離線啟發式偵測 + 規則組裝（未設定 VITE_OPENAI_API_KEY / VITE_GEMINI_API_KEY）"
+}
+
+function backendModeFromApi(api: { mock?: boolean; mode?: string }): AssembleUiMode {
+  if (api.mode === "yolo" || api.mock === false) return "backend-yolo"
+  return "backend-mock"
 }
 
 export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): () => void {
@@ -78,7 +87,7 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
     modeBadge.textContent = modeBadgeLabel(mode)
     modeBadge.title = modeBadgeTitle(mode)
   }
-  setModeBadge(isDetectApiConfigured() ? "backend" : "heuristic")
+  setModeBadge(isDetectApiConfigured() ? "backend-mock" : "heuristic")
 
   const setStep = (msg: string) => {
     status.textContent = msg
@@ -94,7 +103,7 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
     btnConfirm.disabled = true
     setModeBadge(
       isDetectApiConfigured()
-        ? "backend"
+        ? "backend-mock"
         : resolveFloorplanAiProvider().isConfigured()
           ? "ai+rules"
           : "heuristic",
@@ -172,16 +181,17 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
 
       let usedBackend = false
       if (isDetectApiConfigured()) {
-        setStep("呼叫本機 Detect API（mock）…")
+        setStep("呼叫本機 Detect API…")
         try {
           const api = await postDetectImage(file)
           const mapped = mapDetectResponseToFloorplan(api)
+          const backendMode = backendModeFromApi(api)
           result = {
             floorplan: mapped.floorplan,
             excavations: mapped.excavations,
             binary: { width: 0, height: 0, ink: new Uint8Array() },
             diagnostics: mapped.notes,
-            mode: "backend",
+            mode: backendMode,
             assembleNotes: mapped.notes,
             proposalUsed: false,
           }

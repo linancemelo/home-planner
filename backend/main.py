@@ -1,8 +1,8 @@
-"""Home Planner detect API — mock FastAPI backend (no YOLO yet)."""
+"""Home Planner detect API — mock or YOLO-seg + OpenCV."""
 
 from __future__ import annotations
 
-import io
+import os
 from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -11,13 +11,18 @@ from fastapi.responses import JSONResponse
 
 from mock_layout import build_mock_detect_response
 
+DETECT_MODE = os.environ.get("DETECT_MODE", "mock").strip().lower() or "mock"
+if DETECT_MODE not in ("mock", "yolo"):
+    DETECT_MODE = "mock"
+
 app = FastAPI(
     title="Home Planner Detect API",
-    version="0.1.0-mock",
+    version="0.2.0",
     description=(
-        "Mock floor-plan detection. POST /api/v1/detect accepts a multipart image "
-        "and returns full structured JSON (walls/doors/windows/rooms). "
-        "YOLO seg + OpenCV will replace the mock later."
+        "Floor-plan detection. POST /api/v1/detect accepts a multipart image "
+        "and returns structured JSON (walls/doors/windows/rooms). "
+        "Env DETECT_MODE=mock|yolo (default mock). YOLO uses ultralytics seg + OpenCV; "
+        "falls back to mock if the model fails to load."
     ),
 )
 
@@ -38,9 +43,13 @@ app.add_middleware(
 )
 
 
+def _effective_mode() -> str:
+    return DETECT_MODE
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "mode": "mock"}
+    return {"status": "ok", "mode": _effective_mode()}
 
 
 def _image_size(data: bytes) -> tuple[int, int]:
@@ -77,6 +86,44 @@ def _image_size(data: bytes) -> tuple[int, int]:
     return 800, 600
 
 
+def _run_detect(data: bytes, filename: str) -> dict:
+    if DETECT_MODE == "yolo":
+        try:
+            from yolo_pipeline import run_yolo_detect
+
+            return run_yolo_detect(data, source_name=filename)
+        except Exception as e:  # noqa: BLE001
+            width, height = _image_size(data)
+            payload = build_mock_detect_response(
+                source_name=filename,
+                image_width_px=width,
+                image_height_px=height,
+            )
+            reason = str(e)
+            fallback_notes = [
+                f"YOLO 載入／推論失敗，已回退 mock：{reason}",
+                "請確認已 pip install -r requirements.txt，並執行 "
+                "python scripts/download_model.py 或設置 DETECT_MODEL_PATH。",
+            ]
+            payload["notes"] = fallback_notes + list(payload.get("notes") or [])
+            meta = payload.get("meta") or {}
+            meta["notes"] = fallback_notes + list(meta.get("notes") or [])
+            payload["meta"] = meta
+            payload["mock"] = True
+            payload["mode"] = "mock"
+            payload["fallbackFromYolo"] = True
+            return payload
+
+    width, height = _image_size(data)
+    payload = build_mock_detect_response(
+        source_name=filename,
+        image_width_px=width,
+        image_height_px=height,
+    )
+    payload["mode"] = "mock"
+    return payload
+
+
 @app.post("/api/v1/detect")
 async def detect(
     file: Annotated[UploadFile, File(description="Floor-plan image (PNG/JPEG)")],
@@ -100,12 +147,7 @@ async def detect(
     if len(data) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="影像超過 25 MB")
 
-    width, height = _image_size(data)
-    payload = build_mock_detect_response(
-        source_name=file.filename or "upload.png",
-        image_width_px=width,
-        image_height_px=height,
-    )
+    payload = _run_detect(data, file.filename or "upload.png")
     return JSONResponse(content=payload)
 
 
@@ -116,5 +158,5 @@ def root() -> dict[str, str]:
         "docs": "/docs",
         "health": "/health",
         "detect": "POST /api/v1/detect",
-        "mode": "mock",
+        "mode": _effective_mode(),
     }

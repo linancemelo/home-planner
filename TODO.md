@@ -22,10 +22,12 @@ Phase 1／2 之後、尚未實作或已自 UI 撤下的項目。
 
 ## 本機 Detect 後端（FastAPI mock → YOLO）
 - [x] API 契約 + FastAPI mock（`backend/`，`POST /api/v1/detect`）
-- [ ] 以 YOLO segmentation + OpenCV 取代 mock（牆／門／窗／房間）
-- [ ] `opencv-python-headless`、`ultralytics` 等依賴與模型權重版本鎖定
-- [ ] 房間自動分割與 OCR 房名標註（後端產出 `rooms[].type`）
+- [x] YOLO-seg + OpenCV 管線（`DETECT_MODE=yolo`；無微調權重時 OpenCV 幾何為主 + 預訓練 seg best-effort）
+- [x] `opencv-python-headless`、`ultralytics` 依賴與 `scripts/download_model.py`
+- [ ] 平面圖微調權重（`backend/models/floorplan-seg.pt`，類別 room/wall/door/window）
+- [ ] 房間自動分割與 OCR 房名標註（後端產出更準的 `rooms[].type`）
 - [ ] 匯入後互動微調牆／門／窗
+- [ ] YOLO 門／窗缺口與牆段拓樸更穩的後處理
 
 ## AWS 雲端部署（延後／TODO）
 - [ ] S3：上傳原圖與偵測產物（預簽名 URL）
