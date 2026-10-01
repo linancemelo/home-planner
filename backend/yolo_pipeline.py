@@ -1966,18 +1966,18 @@ def _filter_furniture_risk_walls(
                 kept_int.append(w)
                 continue
             # Near true outer perimeter
-            if d_edge <= 1.05 and L >= 0.95:
+            if d_edge <= 1.00 and L >= 1.05:
                 kept_int.append(w)
                 continue
-            # Medium interior partitions (bed/bath walls)
-            if L >= 1.35 and d_edge <= 2.40:
+            # Medium interior partitions (bed/bath walls) — require clearer length
+            if L >= 1.45 and d_edge <= 2.20:
                 kept_int.append(w)
                 continue
             # Keep longer stubs even if deep (real partitions often <2.2m)
-            if L >= 1.8:
+            if L >= 1.85:
                 kept_int.append(w)
                 continue
-            # Short deep furniture ghosts only
+            # Short deep furniture ghosts (sofas/beds/cabinets) — suppress
             dropped += 1
             continue
         # CAD: keep structural ink; only drop tiny stubs
@@ -4123,6 +4123,854 @@ def _split_aabb_rooms_by_walls(
     return final, notes
 
 
+
+def _seg_endpoints(w: dict[str, Any]) -> tuple[tuple[float, float], tuple[float, float]]:
+    return (float(w["a"]["x"]), float(w["a"]["y"])), (float(w["b"]["x"]), float(w["b"]["y"]))
+
+
+def _point_line_proj(
+    px: float, py: float, ax: float, ay: float, bx: float, by: float
+) -> tuple[float, float, float]:
+    """Return (qx, qy, t) projection of P onto infinite line AB; t in [0,1] = segment."""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 < 1e-12:
+        return ax, ay, 0.0
+    t = ((px - ax) * dx + (py - ay) * dy) / L2
+    return ax + t * dx, ay + t * dy, t
+
+
+def _cluster_xy(
+    pts: list[tuple[float, float]], tol: float
+) -> tuple[list[tuple[float, float]], list[int]]:
+    """Greedy spatial cluster; returns (representatives, assignment)."""
+    reps: list[list[float]] = []
+    counts: list[int] = []
+    assign: list[int] = []
+    for x, y in pts:
+        found = -1
+        best = tol
+        for i, (rx, ry) in enumerate(reps):
+            d = ((x - rx) ** 2 + (y - ry) ** 2) ** 0.5
+            if d <= best:
+                best = d
+                found = i
+        if found < 0:
+            assign.append(len(reps))
+            reps.append([x, y])
+            counts.append(1)
+        else:
+            assign.append(found)
+            c = counts[found]
+            reps[found][0] = (reps[found][0] * c + x) / (c + 1)
+            reps[found][1] = (reps[found][1] * c + y) / (c + 1)
+            counts[found] = c + 1
+    return [(r[0], r[1]) for r in reps], assign
+
+
+def _extend_walls_to_junctions(
+    walls: list[dict[str, Any]],
+    *,
+    snap_tol_m: float = 0.28,
+    extend_max_m: float = 0.70,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Snap endpoints + extend stubs to T-junctions so planar faces close.
+
+    Centerline-consistent: near-miss endpoints merge; dangling ends project onto
+    nearby wall bodies within extend_max (door-gap scale), enabling closed faces
+    without inventing new wall ink.
+    """
+    notes: list[str] = []
+    if len(walls) < 3:
+        return walls, notes
+
+    segs: list[dict[str, Any]] = []
+    for w in walls:
+        a, b = _seg_endpoints(w)
+        if ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 < 0.15:
+            continue
+        segs.append(
+            {
+                "a": [a[0], a[1]],
+                "b": [b[0], b[1]],
+                "id": str(w.get("id", "")),
+                "src": w,
+            }
+        )
+    if len(segs) < 3:
+        return walls, notes
+
+    # Pass 1: cluster all endpoints and snap
+    pts = [tuple(s["a"]) for s in segs] + [tuple(s["b"]) for s in segs]
+    reps, assign = _cluster_xy(pts, snap_tol_m)
+    for i, s in enumerate(segs):
+        s["a"] = list(reps[assign[i]])
+        s["b"] = list(reps[assign[i + len(segs)]])
+
+    # Pass 2: extend dangling endpoints to nearest wall body (T-junction)
+    n_ext = 0
+    for i, s in enumerate(segs):
+        for end_key, other_key in (("a", "b"), ("b", "a")):
+            ex, ey = s[end_key]
+            ox, oy = s[other_key]
+            # Already near another endpoint?
+            near_ep = False
+            for j, t in enumerate(segs):
+                if j == i:
+                    continue
+                for tk in ("a", "b"):
+                    if ((ex - t[tk][0]) ** 2 + (ey - t[tk][1]) ** 2) ** 0.5 <= snap_tol_m:
+                        near_ep = True
+                        break
+                if near_ep:
+                    break
+            if near_ep:
+                continue
+            # Direction from other → this end (outward)
+            dx, dy = ex - ox, ey - oy
+            L = (dx * dx + dy * dy) ** 0.5
+            if L < 1e-6:
+                continue
+            ux, uy = dx / L, dy / L
+            best = None  # (dist_along, qx, qy, j)
+            for j, t in enumerate(segs):
+                if j == i:
+                    continue
+                ax, ay = t["a"]
+                bx, by = t["b"]
+                # Try projection of endpoint onto other segment
+                qx, qy, tt = _point_line_proj(ex, ey, ax, ay, bx, by)
+                if tt < -0.05 or tt > 1.05:
+                    continue
+                tt_c = max(0.0, min(1.0, tt))
+                qx = ax + tt_c * (bx - ax)
+                qy = ay + tt_c * (by - ay)
+                d = ((ex - qx) ** 2 + (ey - qy) ** 2) ** 0.5
+                if d > extend_max_m or d < 1e-4:
+                    continue
+                # Prefer hits roughly along outward direction
+                along = (qx - ex) * ux + (qy - ey) * uy
+                if along < -0.05:
+                    continue  # mostly behind
+                # Lateral component shouldn't dominate for nearly-meeting walls
+                lat = abs((qx - ex) * (-uy) + (qy - ey) * ux)
+                if lat > max(0.28, d * 0.55) and d > snap_tol_m:
+                    continue
+                # Keep extension near-axis: don't swing the wall into a diagonal
+                new_align = _axis_align_score(ox, oy, qx, qy)
+                if new_align < 0.85:
+                    continue
+                score = d + (0.15 if along < 0 else 0.0)
+                if best is None or score < best[0]:
+                    best = (score, qx, qy, j, tt_c)
+            if best is None:
+                continue
+            _, qx, qy, j, tt_c = best
+            s[end_key][0], s[end_key][1] = qx, qy
+            n_ext += 1
+            # Record split marker on hit wall for later
+            t = segs[j]
+            t.setdefault("splits", []).append(tt_c)
+
+    # Pass 3: re-cluster after extensions
+    pts = [tuple(s["a"]) for s in segs] + [tuple(s["b"]) for s in segs]
+    reps, assign = _cluster_xy(pts, snap_tol_m * 0.95)
+    for i, s in enumerate(segs):
+        s["a"] = list(reps[assign[i]])
+        s["b"] = list(reps[assign[i + len(segs)]])
+
+    # Pass 4: split walls at T-junction parameters + crossing endpoints
+    out: list[dict[str, Any]] = []
+    for s in segs:
+        ax, ay = s["a"]
+        bx, by = s["b"]
+        params = {0.0, 1.0}
+        for tt in s.get("splits") or []:
+            if 0.08 < tt < 0.92:
+                params.add(float(tt))
+        # Also split where other endpoints lie on this segment
+        for t in segs:
+            if t is s:
+                continue
+            for tk in ("a", "b"):
+                px, py = t[tk]
+                qx, qy, tt = _point_line_proj(px, py, ax, ay, bx, by)
+                if 0.08 < tt < 0.92:
+                    d = ((px - qx) ** 2 + (py - qy) ** 2) ** 0.5
+                    if d <= snap_tol_m * 1.05:
+                        params.add(tt)
+        ordered = sorted(params)
+        # Emit sub-segments between consecutive params
+        prev = ordered[0]
+        for cur in ordered[1:]:
+            if cur - prev < 0.04:
+                prev = cur
+                continue
+            p1 = (ax + prev * (bx - ax), ay + prev * (by - ay))
+            p2 = (ax + cur * (bx - ax), ay + cur * (by - ay))
+            if ((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2) ** 0.5 < 0.20:
+                prev = cur
+                continue
+            nw = dict(s["src"])
+            nw["a"] = _vec(p1[0], p1[1])
+            nw["b"] = _vec(p2[0], p2[1])
+            wid = str(s["id"] or nw.get("id", "w"))
+            nw["id"] = f"{wid}-j{len(out)}"
+            nw["thicknessM"] = nw.get("thicknessM", WALL_THICKNESS_M)
+            nw["thicknessAssumed"] = True
+            out.append(nw)
+            prev = cur
+
+    # Deduplicate near-identical edges
+    out = _dedupe_parallel_walls(out, axis_tol_m=0.18, overlap_slack_m=0.25)
+    # Drop strong diagonals introduced by bad T-extends (keep near-axis centerlines)
+    kept: list[dict[str, Any]] = []
+    dropped_diag = 0
+    for w in out:
+        ax, ay = float(w["a"]["x"]), float(w["a"]["y"])
+        bx, by = float(w["b"]["x"]), float(w["b"]["y"])
+        align = _axis_align_score(ax, ay, bx, by)
+        L = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+        # Allow short diagonals only if very short; long diagonals are furniture/bad extend
+        if align < 0.82 and L >= 1.15:
+            dropped_diag += 1
+            continue
+        if align < 0.70:
+            dropped_diag += 1
+            continue
+        kept.append(w)
+    out = kept
+    if n_ext:
+        notes.append(f"牆段延伸至接點 {n_ext} 端（閉合 planar faces）。")
+    if dropped_diag:
+        notes.append(f"接點圖剔除斜向偽段 {dropped_diag}（保中心線一致性）。")
+    notes.append(f"接點圖牆段 {len(walls)}→{len(out)}（snap＋T 切分）。")
+    return out, notes
+
+
+def _poly_signed_area(verts: list[tuple[float, float]]) -> float:
+    if len(verts) < 3:
+        return 0.0
+    a = 0.0
+    n = len(verts)
+    for i in range(n):
+        x1, y1 = verts[i]
+        x2, y2 = verts[(i + 1) % n]
+        a += x1 * y2 - x2 * y1
+    return 0.5 * a
+
+
+def _poly_min_width_approx(verts: list[tuple[float, float]]) -> float:
+    """Cheap sliver test: min AABB side after simple extent."""
+    if len(verts) < 2:
+        return 0.0
+    xs = [v[0] for v in verts]
+    ys = [v[1] for v in verts]
+    return min(max(xs) - min(xs), max(ys) - min(ys))
+
+
+def _faces_from_halfedges(
+    nodes: list[tuple[float, float]],
+    edges: list[tuple[int, int]],
+) -> list[list[int]]:
+    """Walk half-edges (left-turn) to recover bounded planar faces as node cycles."""
+    import math
+
+    adj: dict[int, list[tuple[int, float]]] = defaultdict(list)
+    for u, v in edges:
+        if u == v:
+            continue
+        ang_uv = math.atan2(nodes[v][1] - nodes[u][1], nodes[v][0] - nodes[u][0])
+        ang_vu = math.atan2(nodes[u][1] - nodes[v][1], nodes[u][0] - nodes[v][0])
+        adj[u].append((v, ang_uv))
+        adj[v].append((u, ang_vu))
+    for u in adj:
+        adj[u].sort(key=lambda t: t[1])
+
+    # next_halfedge[(u,v)] = (v,w) = leftmost turn from incoming u->v
+    next_he: dict[tuple[int, int], tuple[int, int]] = {}
+    for v, outs in adj.items():
+        if len(outs) < 1:
+            continue
+        m = len(outs)
+        # outs sorted by absolute angle of v->w
+        for i, (w, _) in enumerate(outs):
+            # Incoming half-edge that arrives via reverse of v->w is w->v.
+            # For arriving u->v, we want previous outgoing in CCW order
+            # (= clockwise neighbor when walking with interior on left using CW turns,
+            #  or CCW — we use: take the previous in sorted angle list from the
+            #  reverse of the arrival direction).
+            pass
+        # Build mapping: for each outgoing v->w, the twin is w->v.
+        # When we arrive on u->v, choose outgoing v->w that is the immediate
+        # clockwise next from the reverse direction v->u.
+        ang_of = {w: ang for w, ang in outs}
+        for i, (w, ang_vw) in enumerate(outs):
+            # half-edge v->w; its "previous" in CCW sorted list is the right-turn
+            # candidate when arriving on w->v ... we fill by arrival below.
+            _ = (i, w, ang_vw)
+
+    for v, outs in adj.items():
+        m = len(outs)
+        if m == 0:
+            continue
+        # For arrival u->v, reverse direction angle is atan2 of v->u
+        for i, (u, _) in enumerate(outs):
+            # outs[i] is v->u (the reverse of arrival u->v)
+            # Next left-turn outgoing = previous in CCW-sorted list
+            prev_i = (i - 1) % m
+            w = outs[prev_i][0]
+            next_he[(u, v)] = (v, w)
+
+    used: set[tuple[int, int]] = set()
+    faces: list[list[int]] = []
+    for start in list(next_he.keys()):
+        if start in used:
+            continue
+        cycle_nodes: list[int] = []
+        he = start
+        guard = 0
+        ok = True
+        while guard < 500:
+            guard += 1
+            if he in used:
+                if he != start:
+                    ok = False
+                break
+            used.add(he)
+            cycle_nodes.append(he[0])
+            nxt = next_he.get(he)
+            if nxt is None:
+                ok = False
+                break
+            he = nxt
+            if he == start:
+                break
+        else:
+            ok = False
+        if not ok or len(cycle_nodes) < 3:
+            continue
+        # Dedup consecutive
+        cleaned: list[int] = []
+        for n in cycle_nodes:
+            if not cleaned or cleaned[-1] != n:
+                cleaned.append(n)
+        if len(cleaned) >= 3 and cleaned[0] == cleaned[-1]:
+            cleaned = cleaned[:-1]
+        if len(cleaned) >= 3:
+            faces.append(cleaned)
+    return faces
+
+
+
+def _ortho_cleanup_metres(
+    verts: list[tuple[float, float]],
+    *,
+    angle_tol_deg: float = 22.0,
+    min_edge_m: float = 0.18,
+) -> list[tuple[float, float]]:
+    """Light H/V snap + short-edge collapse for metre-space room polygons."""
+    if len(verts) < 3:
+        return verts
+    import math
+    out: list[tuple[float, float]] = [verts[0]]
+    n = len(verts)
+    for i in range(n):
+        a = out[-1]
+        b = verts[(i + 1) % n]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = (dx * dx + dy * dy) ** 0.5
+        if L < min_edge_m:
+            continue
+        ang = abs(math.degrees(math.atan2(dy, dx))) % 180.0
+        near_h = ang <= angle_tol_deg or ang >= 180.0 - angle_tol_deg
+        near_v = abs(ang - 90.0) <= angle_tol_deg
+        if near_h:
+            y = 0.5 * (a[1] + b[1])
+            out[-1] = (a[0], y)
+            out.append((b[0], y))
+        elif near_v:
+            x = 0.5 * (a[0] + b[0])
+            out[-1] = (x, a[1])
+            out.append((x, b[1]))
+        else:
+            # stair-step keep topology
+            if abs(dx) >= abs(dy):
+                out.append((b[0], a[1]))
+                out.append((b[0], b[1]))
+            else:
+                out.append((a[0], b[1]))
+                out.append((b[0], b[1]))
+    # collapse near-duplicates
+    clean: list[tuple[float, float]] = []
+    for p in out:
+        if not clean or ((p[0] - clean[-1][0]) ** 2 + (p[1] - clean[-1][1]) ** 2) ** 0.5 >= min_edge_m:
+            clean.append(p)
+    if len(clean) >= 3 and ((clean[0][0] - clean[-1][0]) ** 2 + (clean[0][1] - clean[-1][1]) ** 2) ** 0.5 < min_edge_m:
+        clean = clean[:-1]
+    return clean if len(clean) >= 3 else verts
+
+
+
+def _rooms_from_sealed_wall_faces(
+    walls: list[dict[str, Any]],
+    *,
+    mpp: float,
+    max_rooms: int = 12,
+    min_area_m2: float = 1.6,
+    seal_m: float = 0.28,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Raster planar faces with extra barrier seal (door-gap close) + sliver filter."""
+    notes: list[str] = []
+    if not walls or mpp <= 0:
+        return [], notes
+    xs: list[float] = []
+    ys: list[float] = []
+    for w in walls:
+        xs.extend([w["a"]["x"], w["b"]["x"]])
+        ys.extend([w["a"]["y"], w["b"]["y"]])
+    if not xs:
+        return [], notes
+    pad = 0.35
+    min_x, max_x = min(xs) - pad, max(xs) + pad
+    min_y, max_y = min(ys) - pad, max(ys) + pad
+    rw = max(32, int(round((max_x - min_x) / mpp)))
+    rh = max(32, int(round((max_y - min_y) / mpp)))
+    if rw * rh > 4_000_000:
+        return [], notes
+    barrier = np.zeros((rh, rw), np.uint8)
+    thick = max(3, int(round(seal_m / mpp)))
+
+    def _m_to_r(x: float, y: float) -> tuple[int, int]:
+        px = int(round((x - min_x) / mpp))
+        py = int(round((max_y - y) / mpp))
+        return px, py
+
+    for w in walls:
+        p1 = _m_to_r(w["a"]["x"], w["a"]["y"])
+        p2 = _m_to_r(w["b"]["x"], w["b"]["y"])
+        cv2.line(barrier, p1, p2, 255, thick)
+    k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    # Extra seal so door gaps become face edges without inventing geometry in export
+    barrier = cv2.dilate(barrier, k3, iterations=3)
+    cv2.rectangle(barrier, (0, 0), (rw - 1, rh - 1), 255, max(3, thick + 1))
+    free = cv2.bitwise_not(barrier)
+    free = cv2.morphologyEx(free, cv2.MORPH_OPEN, k3, iterations=1)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(free, connectivity=4)
+    if n <= 2:
+        return [], notes
+    floor_area = max(1.0, (max_x - min_x) * (max_y - min_y))
+    cands: list[tuple[float, int]] = []
+    for i in range(1, n):
+        area_px = int(st[i, cv2.CC_STAT_AREA])
+        area_m2 = area_px * mpp * mpp
+        if area_m2 < min_area_m2 or area_m2 > floor_area * 0.70:
+            continue
+        ww = int(st[i, cv2.CC_STAT_WIDTH])
+        hh = int(st[i, cv2.CC_STAT_HEIGHT])
+        aspect = max(ww, hh) / (min(ww, hh) + 1e-6)
+        if aspect >= 6.5 and min(ww, hh) * mpp < 1.1:
+            continue
+        cands.append((area_m2, i))
+    cands.sort(reverse=True)
+    selected: list[int] = []
+    for area_m2, i in cands:
+        if len(selected) >= max_rooms:
+            break
+        if area_m2 <= 18.0:
+            selected.append(i)
+    for area_m2, i in cands:
+        if len(selected) >= max_rooms:
+            break
+        if i not in selected:
+            selected.append(i)
+    rooms: list[dict[str, Any]] = []
+    for i in selected:
+        mask = (lab == i).astype(np.uint8) * 255
+        poly = _ortho_polygon_from_mask(mask, max_verts=20)
+        if poly is None or len(poly) < 4:
+            continue
+        verts = []
+        for x, y in poly:
+            mx = min_x + float(x) * mpp
+            my = max_y - float(y) * mpp
+            verts.append(_vec(mx, my))
+        xs2 = [v["x"] for v in verts]
+        ys2 = [v["y"] for v in verts]
+        if (max(xs2) - min(xs2)) * (max(ys2) - min(ys2)) < min_area_m2:
+            continue
+        # Sliver reject
+        if min(max(xs2) - min(xs2), max(ys2) - min(ys2)) < 0.75:
+            continue
+        rooms.append(
+            {
+                "id": f"room-face-{len(rooms)+1}",
+                "type": "房間",
+                "vertices": verts,
+                "confidence": 0.67,
+            }
+        )
+    if rooms:
+        notes.append(
+            f"密封牆網 planar faces {len(rooms)}（seal≈{seal_m:.2f}m；濾外圍／細條）。"
+        )
+    return rooms, notes
+
+
+def _replace_aabb_rooms_with_faces(
+    rooms: list[dict[str, Any]],
+    face_rooms: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Replace AABB room polygons with overlapping planar faces where possible."""
+    notes: list[str] = []
+    if not rooms or not face_rooms:
+        return rooms, notes
+    replaced = 0
+    out: list[dict[str, Any]] = []
+    used_faces: set[int] = set()
+    for r in rooms:
+        nverts = len(r.get("vertices") or [])
+        box = _room_aabb(r)
+        if not box:
+            out.append(r)
+            continue
+        ra = max(1e-6, (box[2] - box[0]) * (box[3] - box[1]))
+        # Only replace clear AABBs (4 verts) or near-rects
+        if nverts > 4 and nverts >= 6:
+            out.append(r)
+            continue
+        best = None  # (score, fi, face)
+        for fi, f in enumerate(face_rooms):
+            if fi in used_faces:
+                continue
+            fb = _room_aabb(f)
+            if not fb:
+                continue
+            ix0 = max(box[0], fb[0]); iy0 = max(box[1], fb[1])
+            ix1 = min(box[2], fb[2]); iy1 = min(box[3], fb[3])
+            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+            fa = max(1e-6, (fb[2] - fb[0]) * (fb[3] - fb[1]))
+            iou = inter / max(1e-6, ra + fa - inter)
+            # Face centroid inside room OR strong overlap
+            cx, cy = (fb[0] + fb[2]) / 2, (fb[1] + fb[3]) / 2
+            inside = box[0] <= cx <= box[2] and box[1] <= cy <= box[3]
+            if inter < 0.22 * min(ra, fa) and not (inside and inter >= 0.18 * fa):
+                continue
+            fv = len(f.get("vertices") or [])
+            # Prefer non-AABB faces and similar area
+            area_ratio = min(fa, ra) / max(fa, ra)
+            score = iou * 2.0 + (0.40 if fv >= 6 else 0.10) + 0.30 * area_ratio
+            if best is None or score > best[0]:
+                best = (score, fi, f)
+        if best and best[0] >= 0.35:
+            _, fi, f = best
+            used_faces.add(fi)
+            nr = dict(r)
+            nr["vertices"] = list(f.get("vertices") or [])
+            nr["confidence"] = max(float(r.get("confidence") or 0.5), 0.66)
+            # keep id but mark provenance lightly in type stays
+            out.append(nr)
+            replaced += 1
+        else:
+            out.append(r)
+    # Do not invent extra face rooms on top of a full YOLO set (avoid under-seg wipe)
+    # Only add uncovered faces when we have few rooms overall
+    if len(out) < 5:
+        for fi, f in enumerate(face_rooms):
+            if fi in used_faces:
+                continue
+            fb = _room_aabb(f)
+            if not fb:
+                continue
+            fa = (fb[2] - fb[0]) * (fb[3] - fb[1])
+            if fa < 2.0 or fa > 22.0:
+                continue
+            cx, cy = (fb[0] + fb[2]) / 2, (fb[1] + fb[3]) / 2
+            if any(
+                (rb := _room_aabb(r)) and rb[0] <= cx <= rb[2] and rb[1] <= cy <= rb[3]
+                for r in out
+            ):
+                continue
+            out.append(dict(f))
+    if len(out) > 12:
+        out = out[:12]
+    if replaced:
+        notes.append(
+            f"AABB→planar face 置換 {replaced}/{len(rooms)}（多數盒房改牆面多邊形）。"
+        )
+    return out, notes
+
+
+def _rooms_from_planar_wall_faces(
+    walls: list[dict[str, Any]],
+    *,
+    snap_tol_m: float = 0.28,
+    extend_max_m: float = 0.70,
+    min_area_m2: float = 1.8,
+    max_rooms: int = 12,
+    min_width_m: float = 0.85,
+    mpp: float | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Planar wall-face room net: extend→junctions→closed faces→room polygons.
+
+    Returns (rooms, junction_walls, notes). Filters the outer unbounded face and
+    sliver faces. Uses (1) door-gap bridges so faces close, (2) half-edge cycles
+    when the graph is sealed, (3) thickened centerline raster faces as the robust
+    emitter so majority AABB can be replaced when walls meet.
+    """
+    notes: list[str] = []
+    jwalls, jnotes = _extend_walls_to_junctions(
+        walls, snap_tol_m=snap_tol_m, extend_max_m=extend_max_m
+    )
+    notes.extend(jnotes)
+    if len(jwalls) < 4:
+        return [], jwalls, notes
+
+    # Bridge door-sized endpoint gaps (virtual centerline seals — face finding only)
+    bridges: list[dict[str, Any]] = []
+    ends: list[tuple[float, float, int, str]] = []  # x,y,wall_idx,end
+    for i, w in enumerate(jwalls):
+        a, b = _seg_endpoints(w)
+        ends.append((a[0], a[1], i, "a"))
+        ends.append((b[0], b[1], i, "b"))
+    used_end: set[tuple[int, str]] = set()
+    for ai, (ax, ay, ia, ea) in enumerate(ends):
+        if (ia, ea) in used_end:
+            continue
+        # Skip if already incident to ≥2 walls (true junction)
+        near = 0
+        for bx, by, ib, eb in ends:
+            if ib == ia and eb == ea:
+                continue
+            if ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5 <= snap_tol_m:
+                near += 1
+        if near >= 1:
+            continue
+        best = None
+        wa = jwalls[ia]
+        a0, a1 = _seg_endpoints(wa)
+        # Outward from this end
+        if ea == "a":
+            ox, oy = a1[0], a1[1]
+        else:
+            ox, oy = a0[0], a0[1]
+        dx, dy = ax - ox, ay - oy
+        L = (dx * dx + dy * dy) ** 0.5
+        if L < 1e-6:
+            continue
+        ux, uy = dx / L, dy / L
+        for bx, by, ib, eb in ends:
+            if ib == ia or (ib, eb) in used_end:
+                continue
+            d = ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+            if d < 0.40 or d > 1.45:
+                continue
+            # Prefer facing (toward each other)
+            along = (bx - ax) * ux + (by - ay) * uy
+            if along < d * 0.20:
+                continue
+            lat = abs((bx - ax) * (-uy) + (by - ay) * ux)
+            if lat > 0.55:
+                continue
+            # Other end outward should roughly face us
+            wb = jwalls[ib]
+            b0, b1 = _seg_endpoints(wb)
+            if eb == "a":
+                o2x, o2y = b1[0], b1[1]
+            else:
+                o2x, o2y = b0[0], b0[1]
+            d2x, d2y = bx - o2x, by - o2y
+            L2 = (d2x * d2x + d2y * d2y) ** 0.5
+            if L2 < 1e-6:
+                continue
+            u2x, u2y = d2x / L2, d2y / L2
+            # Dot of outwards should be negative (facing)
+            if ux * u2x + uy * u2y > 0.25:
+                continue  # allow near-orthogonal door reveals
+            score = d + lat
+            if best is None or score < best[0]:
+                best = (score, bx, by, ib, eb)
+        if best is None:
+            continue
+        _, bx, by, ib, eb = best
+        used_end.add((ia, ea))
+        used_end.add((ib, eb))
+        bridges.append(
+            {
+                "id": f"w-bridge-{len(bridges)+1}",
+                "a": _vec(ax, ay),
+                "b": _vec(bx, by),
+                "thicknessM": WALL_THICKNESS_M,
+                "thicknessAssumed": True,
+            }
+        )
+    face_walls = jwalls + bridges
+    if bridges:
+        notes.append(f"門洞橋接 {len(bridges)} 段（僅供 face 閉合；不進最終牆表）。")
+
+    # --- Half-edge geometric faces ---
+    geo_rooms: list[dict[str, Any]] = []
+    pts = []
+    edge_pairs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for w in face_walls:
+        a, b = _seg_endpoints(w)
+        pts.extend([a, b])
+        edge_pairs.append((a, b))
+    reps, _ = _cluster_xy(pts, snap_tol_m * 0.9)
+    if len(reps) >= 4:
+        def _nid(p: tuple[float, float]) -> int:
+            best_i, best_d = 0, 1e9
+            for i, r in enumerate(reps):
+                d = ((p[0] - r[0]) ** 2 + (p[1] - r[1]) ** 2) ** 0.5
+                if d < best_d:
+                    best_d = d
+                    best_i = i
+            return best_i
+
+        edges: list[tuple[int, int]] = []
+        seen_e: set[tuple[int, int]] = set()
+        for a, b in edge_pairs:
+            u, v = _nid(a), _nid(b)
+            if u == v:
+                continue
+            key = (u, v) if u < v else (v, u)
+            if key in seen_e:
+                continue
+            seen_e.add(key)
+            edges.append((u, v))
+        faces = _faces_from_halfedges(reps, edges)
+        extent = _layout_extent_m(jwalls, None)
+        floor_area = 1.0
+        if extent:
+            floor_area = max(1.0, (extent[2] - extent[0]) * (extent[3] - extent[1]))
+        scored: list[tuple[float, list[tuple[float, float]], int]] = []
+        for fi, f in enumerate(faces):
+            verts = [reps[i] for i in f]
+            area = abs(_poly_signed_area(verts))
+            scored.append((area, verts, fi))
+        scored.sort(reverse=True)
+        drop_ids: set[int] = set()
+        if scored:
+            largest_a, _, largest_i = scored[0]
+            if largest_a >= floor_area * 0.55 or (
+                len(scored) > 1 and largest_a >= scored[1][0] * 2.2
+            ):
+                drop_ids.add(largest_i)
+        for area, verts, fi in scored:
+            if fi in drop_ids or area < min_area_m2 or area > floor_area * 0.72:
+                continue
+            width = _poly_min_width_approx(verts)
+            if width < min_width_m:
+                continue
+            xs = [v[0] for v in verts]
+            ys = [v[1] for v in verts]
+            aspect = max(max(xs) - min(xs), max(ys) - min(ys)) / max(width, 1e-6)
+            if aspect >= 7.5 and area < 6.0:
+                continue
+            verts = _ortho_cleanup_metres(verts, angle_tol_deg=22.0, min_edge_m=0.18)
+            if _poly_signed_area(verts) < 0:
+                verts = list(reversed(verts))
+            clean: list[tuple[float, float]] = []
+            for p in verts:
+                if (
+                    not clean
+                    or ((p[0] - clean[-1][0]) ** 2 + (p[1] - clean[-1][1]) ** 2) ** 0.5 > 0.12
+                ):
+                    clean.append(p)
+            if len(clean) >= 3 and (
+                (clean[0][0] - clean[-1][0]) ** 2 + (clean[0][1] - clean[-1][1]) ** 2
+            ) ** 0.5 <= 0.12:
+                clean = clean[:-1]
+            if len(clean) < 3:
+                continue
+            geo_rooms.append(
+                {
+                    "id": f"room-face-{len(geo_rooms)+1}",
+                    "type": "房間",
+                    "vertices": [_vec(x, y) for x, y in clean],
+                    "confidence": 0.70,
+                }
+            )
+            if len(geo_rooms) >= max_rooms:
+                break
+        notes.append(
+            f"half-edge faces {len(geo_rooms)}（接點 {len(reps)}／邊 {len(edges)}"
+            f"{'＋bridge' if bridges else ''}）。"
+        )
+
+    # --- Robust raster faces from thickened centerline junction walls ---
+    raster_rooms: list[dict[str, Any]] = []
+    use_mpp = float(mpp) if mpp and mpp > 0 else 0.0
+    if use_mpp <= 0:
+        # estimate from layout extent / typical px — skip raster if unknown
+        use_mpp = 0.01
+    try:
+        raster_rooms, rnotes = _rooms_from_sealed_wall_faces(
+            face_walls,
+            mpp=use_mpp,
+            max_rooms=max_rooms,
+            min_area_m2=min_area_m2,
+            seal_m=0.32,
+        )
+        notes.extend(rnotes)
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"raster-face 略過：{e}")
+
+    # Choose better face set: prefer more rooms without mega under-seg
+    def _areas(rs: list[dict[str, Any]]) -> list[float]:
+        out = []
+        for r in rs:
+            box = _room_aabb(r)
+            if box:
+                out.append(max(0.0, (box[2] - box[0]) * (box[3] - box[1])))
+        return sorted(out, reverse=True)
+
+    def _score(rs: list[dict[str, Any]]) -> tuple:
+        if not rs:
+            return (-1, 0, 0)
+        ar = _areas(rs)
+        mega = sum(1 for a in ar if a >= 22.0)
+        non_aabb = sum(1 for r in rs if len(r.get("vertices") or []) >= 6)
+        # higher rooms, fewer mega, more non-aabb
+        return (len(rs) - mega * 2, non_aabb, -mega)
+
+    rooms = geo_rooms
+    if _score(raster_rooms) > _score(geo_rooms):
+        rooms = raster_rooms
+        notes.append(
+            f"採 raster planar faces {len(rooms)}（優於 half-edge {len(geo_rooms)}）。"
+        )
+    elif geo_rooms:
+        notes.append(f"採 half-edge planar faces {len(rooms)}。")
+    # If both weak, merge unique
+    if geo_rooms and raster_rooms and len(rooms) < 4:
+        merged = list(rooms)
+        for b in (raster_rooms if rooms is geo_rooms else geo_rooms):
+            bb = _room_aabb(b)
+            if not bb:
+                continue
+            cx, cy = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+            if any(
+                (fb := _room_aabb(f))
+                and fb[0] <= cx <= fb[2]
+                and fb[1] <= cy <= fb[3]
+                for f in merged
+            ):
+                continue
+            merged.append(b)
+        if len(merged) > len(rooms):
+            rooms = merged[:max_rooms]
+            notes.append(f"faces 合併 →{len(rooms)}。")
+
+    n_non_aabb = sum(1 for r in rooms if len(r.get("vertices") or []) >= 6)
+    notes.append(
+        f"planar 牆面房間網 {len(rooms)}（非 AABB={n_non_aabb}；"
+        f"jwalls={len(jwalls)}）。"
+    )
+    return rooms, jwalls, notes
+
+
+
 def _rooms_from_wall_barriers(
     walls: list[dict[str, Any]],
     *,
@@ -4273,17 +5121,44 @@ def _prefer_finer_rooms(
                 f"牆屏障房間過粗（{len(barrier_rooms)} mega），保留既有 {len(existing)}。"
             )
             return existing, notes
-    # Barrier wins when finer split OR more non-AABB (L-shaped wall faces)
-    if len(barrier_rooms) >= 3 and (
+    # Planar / barrier faces win when they replace majority AABB with wall faces
+    faceish = sum(
+        1 for r in barrier_rooms
+        if str(r.get("id", "")).startswith("room-face") or _nverts(r) >= 6
+    )
+    # Never replace a fine split with a coarse mega-face set
+    if (
+        len(barrier_rooms) < len(existing)
+        and mega_br >= mega_ex
+        and len(existing) >= 5
+        and len(barrier_rooms) <= 4
+    ):
+        notes.append(
+            f"略過過粗 planar／barrier（{len(barrier_rooms)}≤4 vs 既有 {len(existing)}）。"
+        )
+        # fall through to hybrid
+    elif len(barrier_rooms) >= 3 and (
         (mega_ex >= 1 and mega_br < mega_ex)
         or (ex_areas and ex_areas[0] >= 22.0 and br_areas and br_areas[0] < ex_areas[0] * 0.80)
         or (len(barrier_rooms) >= max(4, len(existing)) and mega_br <= mega_ex)
         or (non_aabb_br >= 1 and non_aabb_br >= non_aabb_ex and len(barrier_rooms) >= 4)
         or (non_aabb_br >= 2 and mega_br <= mega_ex + 1)
+        # Step-change: majority of rooms are planar faces / non-AABB
+        or (
+            faceish >= max(4, (len(barrier_rooms) + 1) // 2)
+            and mega_br <= mega_ex
+            and len(barrier_rooms) >= max(5, len(existing) - 1)
+        )
+        or (faceish >= 5 and len(barrier_rooms) >= len(existing))
+        or (
+            non_aabb_br >= max(3, non_aabb_ex + 1)
+            and len(barrier_rooms) >= max(5, len(existing) - 1)
+            and mega_br <= mega_ex
+        )
     ):
         notes.append(
-            f"房間改採牆圖分割 {len(existing)}→{len(barrier_rooms)}"
-            f"（非 AABB／L 形牆面；拆大開放盒）。"
+            f"房間改採牆圖／planar face 分割 {len(existing)}→{len(barrier_rooms)}"
+            f"（非 AABB={non_aabb_br}／faces≈{faceish}；取代多數 AABB）。"
         )
         return barrier_rooms, notes
     # Hybrid: start from existing, replace mega with barrier cells that overlap them
@@ -4929,7 +5804,8 @@ def run_yolo_detect(
     except Exception as e:  # noqa: BLE001
         notes.append(f"medial 內隔間略過：{e}")
     # Drop furniture-risk interior ink (esp. marketing 2b ΣL inflation)
-    max_int = 16 if plan_style == "marketing" else 20
+    # Tighter on marketing so planar faces aren't sliced by sofa/bed ghosts
+    max_int = 12 if plan_style == "marketing" else 20
     walls, furn_notes = _filter_furniture_risk_walls(
         walls, plan_style=plan_style, max_interior=max_int
     )
@@ -4940,6 +5816,21 @@ def run_yolo_detect(
         if "ring" in str(w.get("id", "")) or _seg_length_m(w) >= 0.70
     ]
     walls = [w for w in walls if _seg_length_m(w) >= 0.40]
+    # Planar wall-face room net: extend→junctions→closed faces (filter outer)
+    face_rooms, jwalls, face_notes = _rooms_from_planar_wall_faces(
+        walls,
+        snap_tol_m=0.30 if plan_style == "marketing" else 0.26,
+        extend_max_m=0.75 if plan_style == "cad" else 0.65,
+        min_area_m2=1.6,
+        max_rooms=12,
+        min_width_m=0.80,
+        mpp=mpp,
+    )
+    notes.extend(face_notes)
+    if jwalls and len(jwalls) >= max(4, len(walls) // 2):
+        # Prefer junction-consistent centerlines for openings + barrier faces
+        # Keep ring ids: remapped ids still contain "ring" substring from source
+        walls = jwalls
     # Split mega open-plan AABBs along crossing interior walls (beds/baths)
     rooms, split_notes = _split_aabb_rooms_by_walls(
         rooms, walls, min_room_m2=2.5, mega_m2=14.0
@@ -4955,6 +5846,85 @@ def run_yolo_detect(
         walls, mpp=mpp, height_px=h, max_rooms=12, min_area_m2=1.6
     )
     notes.extend(br_notes)
+    # Prefer planar faces over raster barriers when they do not under-segment
+    def _mega_count(rs: list) -> int:
+        n = 0
+        for r in rs:
+            box = _room_aabb(r)
+            if box and (box[2] - box[0]) * (box[3] - box[1]) >= 22.0:
+                n += 1
+        return n
+
+    face_ok = bool(face_rooms) and (
+        len(face_rooms) >= max(5, len(rooms) - 2)
+        and _mega_count(face_rooms) <= max(1, _mega_count(rooms))
+        and sum(1 for r in face_rooms if len(r.get("vertices") or []) >= 6) >= 2
+    )
+    if face_ok:
+        # Merge: planar faces primary; add barrier rooms not overlapping faces
+        merged_faces = list(face_rooms)
+        for b in barrier_rooms:
+            bb = _room_aabb(b)
+            if not bb:
+                continue
+            cx, cy = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+            covered = any(
+                (fb := _room_aabb(f))
+                and fb[0] <= cx <= fb[2]
+                and fb[1] <= cy <= fb[3]
+                for f in merged_faces
+            )
+            if not covered:
+                merged_faces.append(b)
+        if len(merged_faces) > 12:
+            merged_faces = sorted(
+                merged_faces,
+                key=lambda r: (
+                    -len(r.get("vertices") or []),
+                    -(
+                        ((_room_aabb(r) or (0, 0, 0, 0))[2] - (_room_aabb(r) or (0, 0, 0, 0))[0])
+                        * ((_room_aabb(r) or (0, 0, 0, 0))[3] - (_room_aabb(r) or (0, 0, 0, 0))[1])
+                    ),
+                ),
+            )[:12]
+        barrier_rooms = merged_faces
+        notes.append(
+            f"planar faces 主導房間網 {len(face_rooms)}＋補 barrier "
+            f"→{len(barrier_rooms)}。"
+        )
+    elif face_rooms:
+        notes.append(
+            f"planar faces {len(face_rooms)} 未主導（防 under-seg vs 既有 {len(rooms)}）；"
+            f"交由 prefer／hybrid。"
+        )
+        # Still offer faces to prefer_finer_rooms as candidates via barrier list append
+        # without wiping finer YOLO rooms: extend barrier_rooms with non-overlapping faces
+        extra = []
+        for f in face_rooms:
+            fb = _room_aabb(f)
+            if not fb:
+                continue
+            cx, cy = (fb[0] + fb[2]) / 2, (fb[1] + fb[3]) / 2
+            if any(
+                (bb := _room_aabb(b))
+                and bb[0] <= cx <= bb[2]
+                and bb[1] <= cy <= bb[3]
+                for b in barrier_rooms
+            ):
+                continue
+            # Also skip if covered by existing YOLO room centroid nest
+            if any(
+                (rb := _room_aabb(r))
+                and rb[0] <= cx <= rb[2]
+                and rb[1] <= cy <= rb[3]
+                and (rb[2] - rb[0]) * (rb[3] - rb[1]) < 18.0
+                for r in rooms
+            ):
+                continue
+            extra.append(f)
+        if extra:
+            barrier_rooms = list(barrier_rooms) + extra
+            notes.append(f"planar faces 補入 barrier 候選 +{len(extra)}。")
     rooms, pref_notes = _prefer_finer_rooms(rooms, barrier_rooms)
     notes.extend(pref_notes)
     # Re-clip after preference
@@ -4963,6 +5933,10 @@ def run_yolo_detect(
             rooms, walls, mpp=mpp, height_px=h, content_roi=(x0, y0, x1, y1)
         )
         notes.extend(room_wall_notes2)
+    # Replace remaining AABB rooms with planar faces where they overlap
+    if face_rooms:
+        rooms, repl_notes = _replace_aabb_rooms_with_faces(rooms, face_rooms)
+        notes.extend(repl_notes)
     # Coverage-first cap: keep long near-axis structural walls (was 22; too aggressive)
     if len(walls) > 42:
         ring_keep = [w for w in walls if "ring" in str(w.get("id", ""))]
