@@ -227,3 +227,7 @@ html, body, #root, .plan-studio-host { height: 100%; margin: 0; }
 .hps-modal-legend .lg-door{color:#c0392b;font-weight:600}
 .hps-modal-legend .lg-win{color:#2980b9;font-weight:600}
 .hps-modal-legend .lg-exc{color:#666;font-weight:600}
+
+.hps-mode-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:.2px;border:1px solid var(--line);background:#fff8f0;color:var(--muted);margin-right:4px}
+.hps-mode-badge[data-mode="ai+rules"]{background:#e8f6ef;color:#1e7a4c;border-color:#a8d5be}
+.hps-mode-badge[data-mode="heuristic"]{background:#fff4e5;color:#9a5b1a;border-color:#e6c89a}

@@ -2,12 +2,17 @@
  * 「從平面圖建立」wizard helpers (繁中).
  * DOM lives in the studio shell; this module drives detect → overlay → confirm.
  */
-import type { PipelineResult } from "./detect/pipeline.ts"
 import { detectFloorplan } from "./detect/pipeline.ts"
 import { imageElementToSource, loadImageElement } from "./load-image.ts"
 import { floorplanToBlueprint } from "./floorplanToBlueprint.ts"
 import { drawFloorplanOverlay } from "./overlayDraw.ts"
 import type { PlanBlueprint } from "../plan/types/blueprint.ts"
+import {
+  assembleFromAiAndDetect,
+  resolveFloorplanAiProvider,
+  type AssembleResult,
+  type AssembleUiMode,
+} from "./ai/index.ts"
 
 export type ImportWizardCallbacks = {
   onConfirm: (blueprint: PlanBlueprint) => void
@@ -28,15 +33,29 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
   const btnCancel = root.querySelector("#importPlanCancel") as HTMLButtonElement | null
   const btnClose = root.querySelector("#importPlanClose") as HTMLButtonElement | null
   const openBtn = root.querySelector("#fromPlanImg") as HTMLButtonElement | null
+  const modeBadge = root.querySelector("#importPlanModeBadge") as HTMLElement | null
   if (!modal || !fileIn || !canvas || !status || !btnPick || !btnConfirm || !btnCancel) {
     console.warn("[importWizard] modal markup missing")
     return () => {}
   }
 
   let objectUrl: string | null = null
-  let result: PipelineResult | null = null
+  let result: AssembleResult | null = null
   let imgEl: HTMLImageElement | null = null
   let sourceName = ""
+  let uiMode: AssembleUiMode = "heuristic"
+
+  const setModeBadge = (mode: AssembleUiMode) => {
+    uiMode = mode
+    if (!modeBadge) return
+    modeBadge.dataset.mode = mode
+    modeBadge.textContent = mode === "ai+rules" ? "AI+規則" : "啟發式"
+    modeBadge.title =
+      mode === "ai+rules"
+        ? "已設定 AI 金鑰：提案 + 規則組裝（非最終 Floorplan JSON）"
+        : "離線啟發式偵測 + 規則組裝（未設定 VITE_OPENAI_API_KEY / VITE_GEMINI_API_KEY）"
+  }
+  setModeBadge("heuristic")
 
   const setStep = (msg: string) => {
     status.textContent = msg
@@ -50,6 +69,7 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
       objectUrl = null
     }
     btnConfirm.disabled = true
+    setModeBadge(resolveFloorplanAiProvider().isConfigured() ? "ai+rules" : "heuristic")
     if (notesEl) notesEl.innerHTML = ""
     const ctx = canvas.getContext("2d")
     if (ctx) {
@@ -104,15 +124,29 @@ export function bindImportWizard(root: ParentNode, cb: ImportWizardCallbacks): (
       objectUrl = URL.createObjectURL(file)
       imgEl = await loadImageElement(objectUrl)
       const source = imageElementToSource(imgEl)
-      result = detectFloorplan(source, sourceName)
+      const detected = detectFloorplan(source, sourceName)
+      const provider = resolveFloorplanAiProvider()
+      let proposal = null
+      if (provider.isConfigured()) {
+        setStep(`AI 提案中（${provider.label}）…`)
+        proposal = await provider.propose({
+          sourceName,
+          imageWidthPx: source.width,
+          imageHeightPx: source.height,
+          imageDataUrl: objectUrl ?? undefined,
+        })
+      }
+      result = assembleFromAiAndDetect(detected, proposal)
+      setModeBadge(result.mode)
       const notes = result.floorplan.meta.notes ?? []
       if (notesEl) {
         notesEl.innerHTML = notes.map((n) => `<li>${escapeHtml(n)}</li>`).join("")
       }
       paint()
       const fp = result.floorplan
+      const modeLabel = result.mode === "ai+rules" ? "AI+規則" : "啟發式"
       setStep(
-        `辨識完成：牆 ${fp.walls.length}、門 ${fp.doors.length}、窗 ${fp.windows.length}。請確認疊圖後寫入。`,
+        `辨識完成（${modeLabel}）：牆 ${fp.walls.length}、門 ${fp.doors.length}、窗 ${fp.windows.length}。請確認疊圖後寫入。`,
       )
       btnConfirm.disabled = fp.walls.length === 0
       if (fp.walls.length === 0) setStep("未偵測到可用牆段，請換一張更清楚的平面圖。")

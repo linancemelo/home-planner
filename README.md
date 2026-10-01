@@ -38,6 +38,13 @@
 
 偵測煙測：`npm run test:detect`（使用 `src/import-plan/fixtures`）。
 
+### AI 輔助辨識（架構先行）
+
+- 路徑：`image → 啟發式 detect →（可選）AiFloorplanProposal → assembleFromAiAndDetect（規則／連通性）→ 疊圖確認`。
+- **AI 只出提案**（房間／OCR／門窗候選），**不**輸出最終 `Floorplan` JSON；組裝與拓樸規則在 `src/import-plan/ai/`。
+- 未設定金鑰時離線跑啟發式＋規則（UI 徽章「啟發式」）。設定 `VITE_OPENAI_API_KEY` 或 `VITE_GEMINI_API_KEY`（見 `.env.example`）後走 stub 提供者（徽章「AI+規則」）；實際 Vision HTTP 之後再接。
+- 組裝／連通性煙測：`npm run test:ai`。
+
 ## 快速開始
 
 ```bash
