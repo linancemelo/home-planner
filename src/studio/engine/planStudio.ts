@@ -25,15 +25,16 @@ export function bootPlanStudio(_root: HTMLElement): () => void {
   void ac;
 
   /* ===== 2D engine ===== */
-/* ======================= 多语言（中文 / English，默认中文） ======================= */
+/* ======================= UI 語言：Phase 1 僅繁體中文（台灣）；多語系見 TODO.md ======================= */
 const LANG_STORE_KEY = 'home-planner-lang';
-const LANGS = ['zh', 'zht', 'en'];             // 简体 / 繁體（台湾用字）/ English
-let LANG = (() => { try { const l = localStorage.getItem(LANG_STORE_KEY); return LANGS.includes(l) ? l : 'zht'; } catch(e) { return 'zht'; } })();
+const LANGS = ['zht', 'en'];             // en plumbing kept dormant; zh (簡體) removed
+let LANG = 'zht';
+try { localStorage.removeItem(LANG_STORE_KEY); } catch(e) {}
 // 简 → 繁：先按词替换一字多义的字，再逐字查表（表由 OpenCC s2tw 按本页用到的字生成）
 const S2T_PHRASES = [['布置','佈置'],['布局','佈局'],['台面','檯面'],['复制','複製']];
 const S2T = new Map(('与與两兩个個为為书書于於仅僅从從价價会會传傳体體余餘侧側倾傾储儲儿兒关關内內写寫净淨准準击擊则則刚剛删刪制製办辦动動势勢区區单單占佔卧臥卫衛厅廳历歷压壓厨廚双雙发發变變叶葉后後吗嗎听聽启啟哑啞围圍图圖圆圓场場坐座块塊垫墊墙牆处處备備复復头頭妆妝婴嬰实實宽寬对對导導层層屉屜属屬岛島带帶干乾并並库庫应應开開当當径徑态態总總悬懸懒懶户戶护護拟擬择擇挂掛挡擋挤擠损損换換据據摆擺摇搖撑撐数數无無时時显顯暂暫机機杂雜杆桿条條来來松鬆构構柜櫃标標栈棧栏欄样樣梁樑棱稜椭橢横橫橱櫥气氣没沒注註浅淺测測浏瀏游遊滚滾满滿灯燈灵靈点點热熱状狀独獨环環现現电電画畫监監盖蓋盘盤砖磚确確离離积積称稱竖豎筑築签籤类類约約级級线線结結绕繞绘繪给給统統继繼绿綠缀綴编編缝縫缩縮网網联聯脚腳获獲虚虛装裝见見视視览覽触觸计計认認让讓议議记記设設识識译譯该該语語请請读讀调調负負败敗质質贴貼赶趕转轉轮輪软軟轴軸轻輕载載较較辅輔辑輯边邊过過这這进進远遠适適选選邻鄰里裡针針钢鋼钮鈕铰鉸铺鋪销銷锁鎖键鍵镜鏡长長门門闭閉闲閒间間阅閱阳陽阴陰阶階随隨隐隱静靜页頁顶頂项項顺順颜顏飘飄飞飛马馬鸟鳥齐齊龙龍').match(/../gu).map(p => [...p]));
 const s2t = s => S2T_PHRASES.reduce((a, [f, t]) => a.replaceAll(f, t), s).replace(/[\u3400-\u9fff]/g, c => S2T.get(c) || c);
-const tr = (zh, en) => LANG === 'en' ? en : LANG === 'zht' ? s2t(zh) : zh;
+const tr = (zh, en) => LANG === 'en' ? en : s2t(zh);  // default / only shipped UI: 繁中
 // 内置的房间 / 材料 / 家具名称存的是中文；英文界面下显示译名，用户自己改过的名称原样显示
 const NAMES_EN = {
   '主卧室':'Master Bedroom', '主卫浴':'Master Bath', '小孩房':"Kids' Room", '客卫浴':'Guest Bath', '洗衣阳台':'Laundry Balcony',
@@ -55,14 +56,14 @@ const NAMES_EN = {
   '蒸烤箱高柜':'Oven Tower', '烘干机':'Dryer', '空气净化器':'Air Purifier', '长书桌':'Long Desk', '办公椅':'Office Chair',
   '大书架':'Large Bookshelf', '立式钢琴':'Upright Piano', '跑步机':'Treadmill', '阅读椅':'Reading Chair', '茶桌':'Tea Table', '休闲椅':'Lounge Chair',
 };
-const nm = s => LANG === 'en' ? (NAMES_EN[s] ?? s) : LANG === 'zht' ? s2t(s) : s;
+const nm = s => LANG === 'en' ? (NAMES_EN[s] ?? s) : s2t(s);
 // 静态文案：元素上写 data-en / data-en-title，中文原文首次切换时存进 dataset
 function applyStaticLang(){
-  document.documentElement.lang = {zh:'zh-CN', zht:'zh-TW', en:'en'}[LANG];
+  document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-Hant-TW';
   document.title = tr('室內裝修設計', 'Home Planner');
+  // data-en remains for future i18n; currently always render 繁中 via s2t
   document.querySelectorAll('[data-en]').forEach(el => { el.dataset.zh ??= el.textContent; el.textContent = tr(el.dataset.zh, el.dataset.en); });
   document.querySelectorAll('[data-en-title]').forEach(el => { el.dataset.zhTitle ??= el.title; el.title = tr(el.dataset.zhTitle, el.dataset.enTitle); });
-  document.querySelectorAll('#langSel [data-lang]').forEach(b => { const on = b.dataset.lang === LANG; b.classList.toggle('hps-active', on); b.setAttribute('aria-pressed', on); });
 }
 
 /* ============================================================
@@ -172,6 +173,11 @@ const perim = poly => poly.reduce((a,p,i) => { const q = poly[(i+1)%poly.length]
 const bbox = poly => { const xs = poly.map(p=>p[0]), ys = poly.map(p=>p[1]); return [Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)]; };
 function aabb(f){ const a = f.rot*Math.PI/180, c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a)); return {hw:f.w/2*c + f.d/2*s, hh:f.w/2*s + f.d/2*c}; }
 const fmt = (n, d=2) => n.toFixed(d);
+/** Taiwan 坪 conversion. 1 坪 = 3.305785 m² (common factor). Truncate toward 0 on 3rd decimal (not round). */
+const SQM_PER_PING = 3.305785;
+const sqmToPing = sqm => Math.floor(Number(sqm) / SQM_PER_PING * 100) / 100;
+/** Format area as `12.34 m²（3.73 坪）`. */
+const fmtArea = (sqm, d=2) => `${fmt(sqm, d)} m²（${sqmToPing(sqm).toFixed(2)} 坪）`;
 const norm = a => ((Math.round(a) % 360) + 360) % 360;
 function snapRects(){ return structuralWalls.filter((w,i) => !state.demolished.includes('w'+i)).concat(windowOpenings); }
 
@@ -376,7 +382,7 @@ function renderLabels(){
   g.innerHTML = planRooms.filter(r => r.at).map(r => {
     const [x,y] = r.at, halo = 'stroke="#fbf9f4" stroke-width="45" paint-order="stroke" stroke-linejoin="round"';
     return `<text x="${x}" y="${y}" font-size="250" font-weight="600" text-anchor="middle" fill="#2b2824" ${halo}>${esc(nm(state.rooms[r.id].name))}</text>
-      <text x="${x}" y="${y+260}" font-size="175" text-anchor="middle" fill="#7d7366" ${halo}>${fmt(area(r.poly))} m²</text>`;
+      <text x="${x}" y="${y+260}" font-size="175" text-anchor="middle" fill="#7d7366" ${halo}>${fmtArea(area(r.poly))}</text>`;
   }).join('');
 }
 
@@ -456,7 +462,7 @@ function renderAll(){
 
 function updateHeader(){
   const tot = planRooms.filter(r => r.counted !== false).reduce((a,r) => a + area(r.poly), 0);
-  $('#subtitle').textContent = tr(`套内使用面积约 ${fmt(tot)} m² · 尺寸单位 mm · 原图比例 1:60`, `Net floor area ≈ ${fmt(tot)} m² · Units: mm · Original scale 1:60`);
+  $('#subtitle').textContent = tr(`套内使用面积约 ${fmtArea(tot)} · 尺寸单位 mm · 原图比例 1:60`, `Net floor area ≈ ${fmtArea(tot)} · Units: mm · Original scale 1:60`);
   $('#undo').disabled = !undoStack.length; $('#redo').disabled = !redoStack.length;
   $('#undo').style.opacity = undoStack.length ? 1 : .4; $('#redo').style.opacity = redoStack.length ? 1 : .4;
 }
@@ -476,24 +482,16 @@ function overviewPanel(){
   const rows = planRooms.map(r => {
     const st = state.rooms[r.id];
     return `<tr class="click" data-room="${r.id}"><td><span class="sw" style="background:${floorMaterials[st.mat].sw}"></span>${esc(nm(st.name))}${r.counted===false?' <span class="muted">*</span>':''}</td>
-      <td class="r">${fmt(area(r.poly))} m²</td></tr>`;
+      <td class="r">${fmtArea(area(r.poly))}</td></tr>`;
   }).join('');
   const tot = planRooms.filter(r => r.counted !== false).reduce((a,r) => a + area(r.poly), 0);
-  const byMat = {};
-  planRooms.forEach(r => { const m = state.rooms[r.id].mat; byMat[m] = (byMat[m]||0) + area(r.poly); });
-  let cost = 0;
-  const matRows = Object.entries(byMat).map(([m,a]) => { const c = a*floorMaterials[m].price*1.05; cost += c;
-    return `<tr><td><span class="sw" style="background:${floorMaterials[m].sw}"></span>${nm(floorMaterials[m].name)}</td><td class="r">${fmt(a,1)} m²</td><td class="r">¥${Math.round(c).toLocaleString()}</td></tr>`; }).join('');
   const dem = state.demolished.map(id => structuralWalls[+id.slice(1)]);
   const demLen = dem.reduce((a,w) => a + Math.max(w[2]-w[0], w[3]-w[1]), 0) / 1000;
   return `
   <section><h3>${tr('房间面积','Room Areas')} <small>${tr('点击查看 / 更换地面','Click to view / change flooring')}</small></h3>
     <table>${rows}</table>
-    <div class="total"><span>${tr('套内使用面积','Net floor area')}</span><b>${fmt(tot)} m²</b></div>
+    <div class="total"><span>${tr('套内使用面积','Net floor area')}</span><b>${fmtArea(tot)}</b></div>
     <div class="muted" style="font-size:11px;margin-top:4px">${tr('* 飘窗不计入使用面积；面积按墙体内净尺寸计算','* Bay windows are excluded; areas use net inner wall dimensions')}</div></section>
-  <section><h3>${tr('地面材料估算','Flooring Estimate')} <small>${tr('含 5% 损耗','incl. 5% waste')}</small></h3>
-    <table>${matRows}</table>
-    <div class="total"><span>${tr('地面材料合计','Flooring total')}</span><b>¥${Math.round(cost).toLocaleString()}</b></div></section>
   <section><h3>${tr('方案统计','Plan Stats')}</h3>
     <div class="stats"><div><small>${tr('家具数量','Furniture')}</small><span class="big">${state.furniture.length}</span></div>
       <div><small>${tr('拆除墙体','Walls removed')}</small><span class="big">${fmt(demLen,1)}</span> m</div></div>
@@ -585,17 +583,16 @@ function closeDrawers(){ if (narrow()) drawer(null); }
 
 function roomPanel(r){
   const st = state.rooms[r.id], a = area(r.poly), [x0,y0,x1,y1] = bbox(r.poly), inside = state.furniture.filter(f => f.cx>x0&&f.cx<x1&&f.cy>y0&&f.cy<y1);
-  const mats = Object.entries(floorMaterials).map(([k,m]) => `<button class="mat ${k===st.mat?'on':''}" data-mat="${k}"><i style="background:${m.sw}"></i><span>${nm(m.name)}<small>¥${m.price}/m²</small></span></button>`).join('');
+  const mats = Object.entries(floorMaterials).map(([k,m]) => `<button class="mat ${k===st.mat?'hps-active':''}" data-mat="${k}"><i style="background:${m.sw}"></i><span>${nm(m.name)}</span></button>`).join('');
   return `<section><h3>${tr('房间','Room')}</h3>
     <div class="form"><label class="full">${tr('名称','Name')}<input id="rName" value="${esc(nm(st.name))}"></label></div>
     <div class="stats" style="margin-top:10px">
-      <div><small>${tr('使用面积','Floor area')}</small><span class="big">${fmt(a)}</span> m²</div>
+      <div><small>${tr('使用面积','Floor area')}</small><span class="big">${fmtArea(a)}</span></div>
       <div><small>${tr('周长','Perimeter')}</small><span class="big">${fmt(perim(r.poly),1)}</span> m</div>
       <div><small>${tr('开间','Width')}</small><span class="big">${x1-x0}</span> mm</div>
       <div><small>${tr('进深','Depth')}</small><span class="big">${y1-y0}</span> mm</div></div>
-    <div class="muted">${tr(`墙面面积（层高 2.8m，未扣门窗）约 ${fmt(perim(r.poly)*2.8,1)} m²`, `Wall area (2.8m ceiling, openings not deducted) ≈ ${fmt(perim(r.poly)*2.8,1)} m²`)}</div></section>
-  <section><h3>${tr('地面材料','Flooring')}</h3><div class="mats">${mats}</div>
-    <div class="total"><span>${tr('材料估价','Estimated cost')}</span><b>¥${Math.round(a*floorMaterials[st.mat].price*1.05).toLocaleString()}</b></div></section>
+    <div class="muted">${tr(`墙面面积（层高 2.8m，未扣门窗）约 ${fmtArea(perim(r.poly)*2.8,1)}`, `Wall area (2.8m ceiling, openings not deducted) ≈ ${fmtArea(perim(r.poly)*2.8,1)}`)}</div></section>
+  <section><h3>${tr('地面材料','Flooring')}</h3><div class="mats">${mats}</div></section>
   <section><h3>${tr('房间内家具','Furniture in room')} <small>${tr(`${inside.length} 件`, `${inside.length} items`)}</small></h3>
     <table>${inside.map(f => `<tr class="click" data-fid="${f.id}"><td>${esc(nm(f.name))}</td><td class="r muted">${f.w}×${f.d}</td></tr>`).join('') || `<tr><td class="muted">${tr('暂无','None')}</td></tr>`}</table>
     <div class="actions"><button class="hps-btn" id="back">${tr('← 返回总览','← Back to overview')}</button></div></section>`;
@@ -619,7 +616,7 @@ function furnPanel(f){
       <label>${tr('旋转','Rotation')} (°)<input type="number" id="fR" value="${f.rot}" step="15"></label>
       <label>${tr('颜色','Color')}<input type="color" id="fC" value="${f.color}"></label>
     </div>
-    <div class="muted" style="margin-top:8px">${tr('占地面积','Footprint')} ${fmt(f.w*f.d/1e6)} m²</div>
+    <div class="muted" style="margin-top:8px">${tr('占地面积','Footprint')} ${fmtArea(f.w*f.d/1e6)}</div>
     <div class="actions">
       <button class="hps-btn" id="aRot">${tr('旋转 90°','Rotate 90°')}</button><button class="hps-btn" id="aDup">${tr('复制','Duplicate')}</button>
       <button class="hps-btn" id="aTop">${tr('置于顶层','Bring to front')}</button><button class="hps-btn" id="aBot">${tr('置于底层','Send to back')}</button>
@@ -826,7 +823,7 @@ svg.addEventListener('pointermove', e => {
   $('#cx').textContent = Math.round(p.x) + ' mm'; $('#cy').textContent = Math.round(p.y) + ' mm';
   if (!drag){
     const room = e.target.closest && e.target.closest('[data-room]');
-    $('#hover').innerHTML = room ? `<b>${esc(state.rooms[room.dataset.room].name)}</b> ${fmt(area(planRooms.find(r=>r.id===room.dataset.room).poly))} m²` : '';
+    $('#hover').innerHTML = room ? `<b>${esc(state.rooms[room.dataset.room].name)}</b> ${fmtArea(area(planRooms.find(r=>r.id===room.dataset.room).poly))}` : '';
     if (ui.tool === 'measure' && ui.mA){ ui.mCur = snapPoint(p, e.shiftKey); renderMeasure(); }
     return;
   }
@@ -1081,13 +1078,14 @@ new ResizeObserver(() => {
 }).observe(svg);
 
 function setLang(l){
-  LANG = l; try { localStorage.setItem(LANG_STORE_KEY, l); } catch(e) {}
+  // Multi-language UI deferred (TODO.md). Keep helper for dormant data-en plumbing.
+  if (!LANGS.includes(l) || l === LANG) return;
+  LANG = l;
   applyStaticLang(); syncFullscreen(); syncModeHint(); syncPaneBtns();
   buildLib(); renderOpenings(); renderAll();
   $('#tip').textContent = TIPS()[viewMode];
   window.View3D?.relang();
 }
-$('#langSel').onclick = e => { const l = e.target.closest('[data-lang]')?.dataset.lang; if (l && l !== LANG) setLang(l); };
 
 applyStaticLang(); syncFullscreen();
 buildDefs(); buildLib(); renderOpenings(); renderDims();
@@ -1944,12 +1942,12 @@ function buildLabels(){
   labelG.children.slice().forEach(o => { o.element.remove(); labelG.remove(o); });
   planRooms.filter(r => r.at).forEach(r => {
     const el = document.createElement('div'); el.className = 'rlabel';
-    el.innerHTML = `${esc(nm(state.rooms[r.id].name))}<small>${area(r.poly).toFixed(1)}m²</small>`;
+    el.innerHTML = `${esc(nm(state.rooms[r.id].name))}<small>${fmtArea(area(r.poly), 1)}</small>`;
     const o = new CSS2DObject(el); o.position.set(wx(r.at[0]), opt.cut + .15, wz(r.at[1])); o.visible = labelG.visible; labelG.add(o);
   });
   const counted = planRooms.filter(r => r.counted !== false);
-  $('#roomList').innerHTML = counted.map(r => `<button data-room="${r.id}"><span>${esc(nm(state.rooms[r.id].name))}</span><small>${area(r.poly).toFixed(2)} m²</small></button>`).join('')
-    + `<button data-room="__all"><span>${tr('全屋', 'Whole home')}</span><small>${counted.reduce((a, r) => a + area(r.poly), 0).toFixed(2)} m²</small></button>`;
+  $('#roomList').innerHTML = counted.map(r => `<button data-room="${r.id}"><span>${esc(nm(state.rooms[r.id].name))}</span><small>${fmtArea(area(r.poly))}</small></button>`).join('')
+    + `<button data-room="__all"><span>${tr('全屋', 'Whole home')}</span><small>${fmtArea(counted.reduce((a, r) => a + area(r.poly), 0))}</small></button>`;
   document.querySelectorAll('#roomList button').forEach(b => b.onclick = () => {
     document.querySelectorAll('#roomList button').forEach(x => x.classList.toggle('hps-active', x === b));
     if (opt.mode === 'walk') setMode('orbit');

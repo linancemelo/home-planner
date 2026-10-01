@@ -1,6 +1,6 @@
 # 室內裝修設計（Home Planner）
 
-繁體中文（台灣）| English UI toggle in-app
+繁體中文（台灣）介面
 
 純前端的室內裝修設計工具：在 2D 平面圖上擺放家具、拆改牆體、測量尺寸，一鍵切換到 Three.js 3D 場景，可鳥瞰或第一人稱漫遊。
 
@@ -21,7 +21,7 @@
 - 與 2D 方案即時同步
 
 **方案與統計**
-- 房間面積與材料造價估算
+- 房間面積（m²＋坪）與地面材料選擇
 - 匯出 PNG、匯出 / 匯入方案 JSON（與上游 schema 相容）
 - 「從平面圖建立」為 Phase 2 預留（即將推出）
 
@@ -64,6 +64,10 @@ GitHub Pages `base` 為 `/home-planner/`。
 - React 19 + Vite + TypeScript
 - 2D：SVG；3D：Three.js r160（npm，非 CDN）
 - 方案 JSON schema 與 wy51ai/floorplan-3d 匯出相容（便於 Phase 2 對接）
+
+## 待辦
+
+詳見 [TODO.md](TODO.md)：造價／預算估算、多語系（簡中／英文等）、Phase 2 平面圖匯入等。
 
 ## 授權
 
