@@ -1,0 +1,11 @@
+# Fine-tune room/wall/door/window YOLO-seg (CPU overnight)
+path: /workspace/home-planner-quality2/backend/fixtures/finetune_rw
+train: images/train
+val: images/val
+names:
+  0: room
+  1: wall
+  2: door
+  3: window
+  4: stair
+  5: annotation

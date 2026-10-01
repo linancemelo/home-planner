@@ -34,3 +34,10 @@ backend/models/*.pth
 backend/models/*.onnx
 backend/models/*.safetensors
 backend/models/cubicasa/
+
+# Local model candidates / fine-tune artifacts (large; download via scripts)
+backend/models/candidates/
+backend/fixtures/finetune_rw/images/
+backend/fixtures/finetune_rw/labels/
+backend/fixtures/finetune_rw/runs/
+backend/models/floorplan-rw-seg-ft.pt

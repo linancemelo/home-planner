@@ -27,6 +27,11 @@ HF_FLOORPLAN_REPO = "mudasir13cs/floorcad-yolov8n-seg"
 HF_FLOORPLAN_FILE = "floorcad-yolov8n-seg.pt"
 FLOORPLAN_DEST_NAME = "floorplan-seg.pt"
 
+# Room/wall/door/window YOLO-seg (preferred over FloorCAD symbol taxonomy)
+HF_RW_REPO = "JessiP23/floorplan-seg-v2"
+HF_RW_FILE = "best.pt"
+RW_DEST_NAME = "floorplan-rw-seg.pt"
+
 # CubiCasa5K ResNet34-UNet (floor/wall/door/window semantic). MIT weights.
 HF_CUBICASA_REPO = "Yytsi/floorplan-to-3d-walls"
 HF_CUBICASA_FILE = "best.safetensors"
@@ -111,6 +116,30 @@ def _download_floorplan(dest: Path) -> bool:
     return True
 
 
+
+def _download_rw(dest: Path) -> bool:
+    if dest.is_file() and dest.stat().st_size > 1_000_000:
+        print(f"Already present: {dest}")
+        return True
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("未安裝 huggingface_hub；無法下載 RW-seg。", file=sys.stderr)
+        return False
+    print(f"Downloading {HF_RW_REPO}/{HF_RW_FILE} …")
+    try:
+        ckpt = hf_hub_download(HF_RW_REPO, HF_RW_FILE)
+    except Exception as e:  # noqa: BLE001
+        print(f"RW-seg 下載失敗：{e}", file=sys.stderr)
+        return False
+    shutil.copy2(ckpt, dest)
+    print(f"Copied → {dest}")
+    print(
+        "Note: floorplan-rw-seg（room/wall/door/window/stair/annotation）；"
+        "優於 FloorCAD 符號分類對行銷圖的可用性。授權見 HF model card。"
+    )
+    return True
+
 def _download_cubicasa(dest_dir: Path) -> bool:
     dest_dir.mkdir(parents=True, exist_ok=True)
     ckpt = dest_dir / HF_CUBICASA_FILE
@@ -185,6 +214,11 @@ def main() -> int:
         return 1
 
     ok = True
+    # Preferred: room/wall/door/window YOLO-seg
+    rw_dest = MODELS / RW_DEST_NAME
+    if not _download_rw(rw_dest):
+        print("RW-seg 略過／失敗（將嘗試 FloorCAD）。", file=sys.stderr)
+
     if not args.no_floorplan:
         fp_dest = MODELS / FLOORPLAN_DEST_NAME
         if not _download_floorplan(fp_dest):
@@ -197,6 +231,8 @@ def main() -> int:
                 _copy_ultralytics(args.name, nano)
     else:
         ok = _copy_ultralytics(args.name, MODELS / args.name)
+
+    ok = rw_dest.is_file() or ok
 
     if not args.no_cubicasa and args.cubicasa:
         cubi_ok = _download_cubicasa(MODELS / CUBICASA_DIR_NAME)

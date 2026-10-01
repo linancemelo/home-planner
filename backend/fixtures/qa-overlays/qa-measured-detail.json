@@ -1,0 +1,81 @@
+[
+  {
+    "image": "2b69218a-b.jpg",
+    "walls": 25,
+    "doors": 7,
+    "windows": 5,
+    "rooms": 9,
+    "ring_walls": 13,
+    "peri_windows": 0,
+    "room_src": "房間採用 RW-YOLO 遮罩（9；CubiCasa/OpenCV 作後備）。",
+    "door_ids": [
+      "d-cubi-1",
+      "d-cubi-2",
+      "d-cubi-3",
+      "d-access-4",
+      "d-access-5",
+      "d-access-6",
+      "d-access-7"
+    ],
+    "window_ids": [
+      "win-cubi-1",
+      "win-cubi-2",
+      "win-cubi-5",
+      "win-cubi-6",
+      "win-cubi-8"
+    ]
+  },
+  {
+    "image": "964226aa-b.jpg",
+    "walls": 17,
+    "doors": 8,
+    "windows": 3,
+    "rooms": 7,
+    "ring_walls": 6,
+    "peri_windows": 0,
+    "room_src": "房間採用 RW-YOLO 遮罩（8；CubiCasa/OpenCV 作後備）。",
+    "door_ids": [
+      "d-yolo-3",
+      "d-yolo-4",
+      "d-yolo-5",
+      "d-yolo-6",
+      "d-yolo-7",
+      "d-cubi-1",
+      "d-access-7",
+      "d-access-8"
+    ],
+    "window_ids": [
+      "win-yolo-1",
+      "win-yolo-2",
+      "win-yolo-4"
+    ]
+  },
+  {
+    "image": "bb00b5bf-b.jpg",
+    "walls": 22,
+    "doors": 9,
+    "windows": 5,
+    "rooms": 9,
+    "ring_walls": 9,
+    "peri_windows": 0,
+    "room_src": "房間採用 RW-YOLO 遮罩（9；CubiCasa/OpenCV 作後備）。",
+    "door_ids": [
+      "d-yolo-1",
+      "d-yolo-2",
+      "d-yolo-3",
+      "d-yolo-4",
+      "d-yolo-5",
+      "d-yolo-9",
+      "d-access-7",
+      "d-access-8",
+      "d-access-9"
+    ],
+    "window_ids": [
+      "win-yolo-4",
+      "win-cubi-1",
+      "win-ink-1",
+      "win-ink-2",
+      "win-ink-3"
+    ]
+  }
+]

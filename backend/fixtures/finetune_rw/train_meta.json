@@ -1,0 +1,17 @@
+{
+  "elapsed_s": 84.9,
+  "epochs": 12,
+  "imgsz": 416,
+  "batch": 2,
+  "device": "cpu",
+  "base": "JessiP23/floorplan-seg-v2 (YOLO11s-seg)",
+  "best": "models/floorplan-rw-seg-ft.pt",
+  "val_box_mAP50": 0.858,
+  "val_mask_mAP50": 0.666,
+  "note": "Synthetic 48+8 + weak CubiCasa labels on 3 baselines; CPU 12 epochs ~85s. Val optimistic (mostly synthetic).",
+  "gpu": false,
+  "blocker": "No GPU; CPU fine-tune only short/small imgsz=416. Not enough for marketing-domain leap alone.",
+  "primary_weights": "floorplan-rw-seg.pt (= JessiP23/floorplan-seg-v2 base)",
+  "ft_weights": "floorplan-rw-seg-ft.pt (CPU 12ep; NOT promoted \u2014 over-fragmented rooms on baselines)",
+  "decision": "Ship base RW-seg + fusion; keep FT artifact for future GPU train."
+}

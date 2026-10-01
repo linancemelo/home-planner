@@ -61,7 +61,8 @@ def default_model_path() -> Path:
     if env:
         return Path(env)
     for name in (
-        "floorplan-seg.pt",
+        "floorplan-rw-seg.pt",  # room/wall/door/window YOLO-seg (preferred)
+        "floorplan-seg.pt",    # FloorCAD symbol seg (fallback)
         "yolo11n-seg.pt",
         "yolov8n-seg.pt",
     ):
@@ -146,6 +147,57 @@ def _approx_polygon(mask: np.ndarray, epsilon_frac: float = 0.02) -> np.ndarray 
     return approx.reshape(-1, 2).astype(np.float64)
 
 
+
+
+
+def _wall_mask_centerline_m(
+    mask: np.ndarray,
+    *,
+    height_px: int,
+    mpp: float,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Thick wall mask → near-axis centerline segment in metres (PCA)."""
+    m = (mask > 0).astype(np.uint8) * 255
+    if int(cv2.countNonZero(m)) < 40:
+        return None
+    ys, xs = np.where(m > 0)
+    if xs.size < 20:
+        return None
+    pts = np.column_stack([xs.astype(np.float64), ys.astype(np.float64)])
+    mean = pts.mean(axis=0)
+    centered = pts - mean
+    cov = centered.T @ centered / max(len(pts) - 1, 1)
+    try:
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        axis = eigvecs[:, int(np.argmax(eigvals))]
+    except np.linalg.LinAlgError:
+        axis = np.array([1.0, 0.0])
+    t = centered @ axis
+    t0, t1 = float(t.min()), float(t.max())
+    if abs(t1 - t0) < 8:
+        return None
+    p0 = mean + axis * t0
+    p1 = mean + axis * t1
+    dx, dy = abs(p1[0] - p0[0]), abs(p1[1] - p0[1])
+    if dx >= dy * 1.15:
+        ymid = 0.5 * (p0[1] + p1[1])
+        xa, xb = float(min(p0[0], p1[0])), float(max(p0[0], p1[0]))
+        p0 = np.array([xa, ymid])
+        p1 = np.array([xb, ymid])
+    elif dy >= dx * 1.15:
+        xmid = 0.5 * (p0[0] + p1[0])
+        ya, yb = float(min(p0[1], p1[1])), float(max(p0[1], p1[1]))
+        p0 = np.array([xmid, ya])
+        p1 = np.array([xmid, yb])
+    else:
+        if min(dx, dy) / max(dx, dy, 1e-6) > 0.45:
+            return None
+    a = _px_to_m(float(p0[0]), float(p0[1]), height_px=height_px, mpp=mpp)
+    b = _px_to_m(float(p1[0]), float(p1[1]), height_px=height_px, mpp=mpp)
+    L = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+    if L < 0.35:
+        return None
+    return a, b
 
 def _ortho_polygon_from_mask(mask: np.ndarray, *, max_verts: int = 12) -> np.ndarray | None:
     """Axis-aligned-ish room outline from free-space mask.
@@ -2184,6 +2236,93 @@ def _wall_has_ink_support(
     return (hits / max(n, 1)) >= min_frac
 
 
+
+def _filter_rooms_by_footprint(
+    rooms: list[dict[str, Any]],
+    foot: np.ndarray,
+    *,
+    mpp: float,
+    height_px: int,
+    min_overlap: float = 0.45,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep rooms whose AABB overlaps the drawing footprint enough (drop chrome)."""
+    notes: list[str] = []
+    if not rooms or foot is None or foot.max() == 0 or mpp <= 0:
+        return rooms, notes
+    h, w = foot.shape[:2]
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for r in rooms:
+        box = _room_aabb(r)
+        if not box:
+            dropped += 1
+            continue
+        min_x, min_y, max_x, max_y = box
+        # metres BL → px TL
+        x0 = int(max(0, min(w - 1, round(min_x / mpp))))
+        x1 = int(max(0, min(w, round(max_x / mpp))))
+        y_top = int(max(0, min(h - 1, round(height_px - max_y / mpp))))
+        y_bot = int(max(0, min(h, round(height_px - min_y / mpp))))
+        if x1 <= x0 or y_bot <= y_top:
+            dropped += 1
+            continue
+        patch = foot[y_top:y_bot, x0:x1]
+        if patch.size == 0:
+            dropped += 1
+            continue
+        overlap = float((patch > 0).mean())
+        if overlap < min_overlap:
+            dropped += 1
+            continue
+        # Also reject tiny rooms that sit mostly on cream (low ink)
+        kept.append(r)
+    if dropped:
+        notes.append(
+            f"剔除 footprint 重疊不足（<{min_overlap:.0%}）房間 {dropped} 個。"
+        )
+    return kept, notes
+
+
+def _filter_walls_by_footprint(
+    walls: list[dict[str, Any]],
+    foot: np.ndarray,
+    *,
+    mpp: float,
+    height_px: int,
+    min_hit: float = 0.35,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Drop non-ring walls whose midpoints fall outside the drawing footprint."""
+    notes: list[str] = []
+    if not walls or foot is None or foot.max() == 0 or mpp <= 0:
+        return walls, notes
+    h, w = foot.shape[:2]
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for wall in walls:
+        wid = str(wall.get("id", ""))
+        if "ring" in wid:
+            kept.append(wall)
+            continue
+        ax, ay = wall["a"]["x"], wall["a"]["y"]
+        bx, by = wall["b"]["x"], wall["b"]["y"]
+        hits = 0
+        samples = 0
+        for t in (0.15, 0.5, 0.85):
+            x = ax + (bx - ax) * t
+            y = ay + (by - ay) * t
+            px = int(round(x / mpp))
+            py = int(round(height_px - y / mpp))
+            samples += 1
+            if 0 <= px < w and 0 <= py < h and foot[py, px] > 0:
+                hits += 1
+        if samples and hits / samples >= min_hit:
+            kept.append(wall)
+        else:
+            dropped += 1
+    if dropped:
+        notes.append(f"剔除 footprint 外 YOLO／偽牆 {dropped} 條。")
+    return kept, notes
+
 def _filter_chrome_rooms(
     rooms: list[dict[str, Any]],
     *,
@@ -4119,10 +4258,26 @@ def run_yolo_detect(
     yolo_windows: list[dict[str, Any]] = []
     confs: list[float] = []
 
-    # Higher conf on FloorCAD furniture-heavy taxonomy to cut false walls/openings
-    conf_thr = 0.22 if has_floorplan_classes else 0.28
+    # RW taxonomy (room/wall/door/window) → lower conf + larger imgsz.
+    # FloorCAD furniture-heavy taxonomy → slightly higher conf to cut false walls.
+    name_set = {str(n).strip().lower() for n in names.values()}
+    has_rw_taxonomy = {"wall", "door", "window"}.issubset(name_set) and (
+        "room" in name_set or any(n.startswith("space") for n in name_set)
+    )
+    if has_rw_taxonomy:
+        conf_thr = 0.16
+        imgsz = 896
+        notes.append("YOLO 權重為 room/wall/door/window 分類；imgsz=896 conf≥0.16。")
+    elif has_floorplan_classes:
+        conf_thr = 0.22
+        imgsz = 640
+    else:
+        conf_thr = 0.28
+        imgsz = 640
     try:
-        results = model.predict(bgr, verbose=False, conf=conf_thr, iou=0.45)
+        results = model.predict(
+            bgr, verbose=False, conf=conf_thr, iou=0.45, imgsz=imgsz
+        )
     except Exception as e:  # noqa: BLE001
         notes.append(f"YOLO 推論失敗，改純 OpenCV：{e}")
         results = []
@@ -4166,10 +4321,23 @@ def run_yolo_detect(
                 and float(cv2.contourArea(poly.astype(np.float32).reshape(-1, 1, 2)))
                 > (w * h * 0.03)
             ):
-                if poly is None:
+                room_poly = None
+                if mask_data is not None and mi < len(mask_data):
+                    raw_mask = mask_data[mi]
+                    if raw_mask.shape[0] != h or raw_mask.shape[1] != w:
+                        raw_mask = cv2.resize(
+                            raw_mask, (w, h), interpolation=cv2.INTER_LINEAR
+                        )
+                    room_poly = _ortho_polygon_from_mask(
+                        (raw_mask > 0.5).astype(np.uint8) * 255, max_verts=10
+                    )
+                if room_poly is None:
+                    room_poly = poly
+                if room_poly is None:
                     continue
                 verts_m = [
-                    _px_to_m(float(x), float(y), height_px=h, mpp=mpp) for x, y in poly
+                    _px_to_m(float(x), float(y), height_px=h, mpp=mpp)
+                    for x, y in room_poly
                 ]
                 yolo_rooms.append(
                     {
@@ -4180,19 +4348,41 @@ def run_yolo_detect(
                     }
                 )
             elif kind == "wall":
-                if poly is not None and len(poly) >= 2:
-                    verts_m = [
-                        _px_to_m(float(x), float(y), height_px=h, mpp=mpp) for x, y in poly
-                    ]
-                    best = (0.0, verts_m[0], verts_m[1] if len(verts_m) > 1 else verts_m[0])
-                    for i in range(len(verts_m)):
-                        a, b = verts_m[i], verts_m[(i + 1) % len(verts_m)]
-                        d = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
-                        if d > best[0]:
-                            best = (d, a, b)
-                    a_m, b_m = best[1], best[2]
-                else:
-                    a_m, b_m = _box_to_wall_segment_m(xyxy[mi], height_px=h, mpp=mpp)
+                a_m = b_m = None
+                if mask_data is not None and mi < len(mask_data):
+                    raw_mask = mask_data[mi]
+                    if raw_mask.shape[0] != h or raw_mask.shape[1] != w:
+                        raw_mask = cv2.resize(
+                            raw_mask, (w, h), interpolation=cv2.INTER_LINEAR
+                        )
+                    cl = _wall_mask_centerline_m(
+                        (raw_mask > 0.5).astype(np.uint8) * 255,
+                        height_px=h,
+                        mpp=mpp,
+                    )
+                    if cl is not None:
+                        a_m, b_m = cl
+                if a_m is None:
+                    if poly is not None and len(poly) >= 2:
+                        verts_m = [
+                            _px_to_m(float(x), float(y), height_px=h, mpp=mpp)
+                            for x, y in poly
+                        ]
+                        best = (
+                            0.0,
+                            verts_m[0],
+                            verts_m[1] if len(verts_m) > 1 else verts_m[0],
+                        )
+                        for i in range(len(verts_m)):
+                            a, b = verts_m[i], verts_m[(i + 1) % len(verts_m)]
+                            d = ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+                            if d > best[0]:
+                                best = (d, a, b)
+                        a_m, b_m = best[1], best[2]
+                    else:
+                        a_m, b_m = _box_to_wall_segment_m(
+                            xyxy[mi], height_px=h, mpp=mpp
+                        )
                 length = ((a_m[0] - b_m[0]) ** 2 + (a_m[1] - b_m[1]) ** 2) ** 0.5
                 if length < 0.25:
                     continue
@@ -4268,7 +4458,7 @@ def run_yolo_detect(
     except Exception as e:  # noqa: BLE001
         notes.append(f"CubiCasa 略過：{e}")
 
-    # Prefer richer room topology (split bedrooms) — CubiCasa floor+wall barriers or OpenCV
+    # Prefer richer room topology — RW YOLO rooms first, then CubiCasa, then OpenCV
     rooms = cv_rooms
     roi_m = (
         x0 * mpp,
@@ -4276,7 +4466,42 @@ def run_yolo_detect(
         x1 * mpp,
         (h - y0) * mpp,
     )
-    if cubi and cubi.get("rooms"):
+    yolo_rooms_f, yr_notes = _filter_chrome_rooms(yolo_rooms, roi_m=roi_m)
+    notes.extend(yr_notes)
+    foot_for_rooms = _footprint_mask(bgr, x0, y0, x1, y1)
+    yolo_rooms_f, fp_notes = _filter_rooms_by_footprint(
+        yolo_rooms_f, foot_for_rooms, mpp=mpp, height_px=h, min_overlap=0.50
+    )
+    notes.extend(fp_notes)
+    if len(yolo_rooms_f) > 10:
+        def _area(r):
+            box = _room_aabb(r)
+            if not box:
+                return 0.0
+            return (box[2] - box[0]) * (box[3] - box[1])
+        yolo_rooms_f = sorted(yolo_rooms_f, key=_area, reverse=True)[:10]
+        notes.append("RW-YOLO 房間過多，保留面積最大 10 個。")
+    used_yolo_rooms = False
+    if has_rw_taxonomy and len(yolo_rooms_f) >= 3:
+        # Reject YOLO room set if any room is huge vs footprint (chrome mega-box)
+        foot_area_m2 = float((foot_for_rooms > 0).sum()) * (mpp ** 2)
+        areas = []
+        for r in yolo_rooms_f:
+            box = _room_aabb(r)
+            if box:
+                areas.append((box[2] - box[0]) * (box[3] - box[1]))
+        mega = sum(1 for a in areas if foot_area_m2 > 1 and a > foot_area_m2 * 0.42)
+        if mega >= 2 or (areas and max(areas) > max(foot_area_m2 * 0.55, 40.0)):
+            notes.append(
+                f"RW-YOLO 房間含 mega／chrome（mega={mega}），改 CubiCasa/OpenCV。"
+            )
+        else:
+            rooms = yolo_rooms_f
+            used_yolo_rooms = True
+            notes.append(
+                f"房間採用 RW-YOLO 遮罩（{len(yolo_rooms_f)}；CubiCasa/OpenCV 作後備）。"
+            )
+    if (not used_yolo_rooms) and cubi and cubi.get("rooms"):
         cr = cubi["rooms"]
         cr_f, cr_notes = _filter_chrome_rooms(cr, roi_m=roi_m)
         notes.extend(cr_notes)
@@ -4295,17 +4520,37 @@ def run_yolo_detect(
             notes.append(
                 f"CubiCasa 房間 chrome 過濾後僅 {len(cr_f)}，改用 OpenCV {len(cv_rooms)}。"
             )
-    elif yolo_rooms and len(yolo_rooms) >= max(3, len(cv_rooms)):
-        rooms = yolo_rooms
+    elif (not used_yolo_rooms) and yolo_rooms_f and len(yolo_rooms_f) >= max(3, len(cv_rooms)):
+        rooms = yolo_rooms_f
+        used_yolo_rooms = True
         notes.append("房間採用 YOLO 遮罩。")
     rooms, chrome2 = _filter_chrome_rooms(rooms, roi_m=roi_m)
     notes.extend(chrome2)
 
     walls = list(cv_walls)
     if yolo_walls:
-        # Only keep YOLO walls that are reasonably long; merge into CV structure
-        long_yolo = [w for w in yolo_walls if _seg_length_m(w) >= 0.8]
-        if long_yolo:
+        # RW taxonomy: trust YOLO walls more (centerlines); FloorCAD: longer only
+        min_yolo_L = 0.55 if has_rw_taxonomy else 0.8
+        long_yolo = []
+        for yw in yolo_walls:
+            if _seg_length_m(yw) < min_yolo_L:
+                continue
+            # Near-axis only — drop diagonal furniture/noise walls
+            ax, ay, bx, by = yw["a"]["x"], yw["a"]["y"], yw["b"]["x"], yw["b"]["y"]
+            if abs(ax - bx) >= 0.35 and abs(ay - by) >= 0.35:
+                continue
+            long_yolo.append(yw)
+        foot_w = _footprint_mask(bgr, x0, y0, x1, y1)
+        long_yolo, yw_fp = _filter_walls_by_footprint(
+            long_yolo, foot_w, mpp=mpp, height_px=h, min_hit=0.40
+        )
+        notes.extend(yw_fp)
+        if has_rw_taxonomy and len(long_yolo) >= 6:
+            walls = walls + long_yolo
+            notes.append(
+                f"RW-YOLO 牆為主結構併入 {len(long_yolo)}（minL={min_yolo_L}）。"
+            )
+        elif long_yolo:
             walls = walls + long_yolo
             notes.append(f"併入 YOLO 長牆 {len(long_yolo)}。")
     if cubi and cubi.get("wall_segs"):
@@ -4422,6 +4667,8 @@ def run_yolo_detect(
             )
             if "ink" in wid or wid.startswith("w-m-"):
                 prio = 0
+            elif "yolo" in wid:
+                prio = 0 if has_rw_taxonomy else 1
             elif "cubi" in wid:
                 prio = 0 if plan_style == "cad" else 1
             elif "skel" in wid:

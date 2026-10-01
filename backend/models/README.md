@@ -4,7 +4,8 @@
 
 | 路徑 | 說明 |
 | --- | --- |
-| `floorplan-seg.pt` | FloorCAD YOLO-seg（CAD 符號：wall／door／window…，**無 room**） |
+| `floorplan-rw-seg.pt` | **優先** room/wall/door/window YOLO-seg（`JessiP23/floorplan-seg-v2`；可被 CPU fine-tune 覆寫） |
+| `floorplan-seg.pt` | FloorCAD YOLO-seg（CAD 符號：wall／door／window…，**無 room**；後備） |
 | `cubicasa/best.safetensors` | CubiCasa5K ResNet34-UNet（**floor／wall／door／window**；floor→房間連通） |
 | `yolo11n-seg.pt` | Ultralytics COCO nano seg（非平面圖；後備） |
 
@@ -14,7 +15,7 @@
 cd backend
 source .venv/bin/activate
 pip install -r requirements.txt
-python scripts/download_model.py          # FloorCAD + CubiCasa（預設）
+python scripts/download_model.py          # RW-seg + FloorCAD + CubiCasa（預設）
 python scripts/download_model.py --no-cubicasa
 python scripts/download_model.py --no-floorplan --cubicasa
 ```
@@ -28,7 +29,7 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 # 或倉庫根目錄：./scripts/dev-local.sh
 ```
 
-管線：OpenCV 房間邊牆（去噪）＋ FloorCAD YOLO 符號＋ CubiCasa 開口（過碎牆捨棄）＋缺口／外牆窗／連通性。
+管線：RW-YOLO（room/wall/door/window）＋ OpenCV 外周界 ring／flush openings＋ CubiCasa UNet 後備＋連通性。
 
 ## 迴歸
 
