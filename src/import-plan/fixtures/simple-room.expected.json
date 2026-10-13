@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "meta": {
+    "sourceName": "simple-room.png",
+    "imageWidthPx": 980,
+    "imageHeightPx": 720,
+    "metersPerPixel": 0.01,
+    "scaleTrusted": false,
+    "coordinateOrigin": "bottom-left",
+    "ceilingHeightM": 2.8,
+    "ceilingHeightAssumed": true,
+    "detectionConfidence": 0.74,
+    "notes": [
+      "圖面標註尺寸未採信（NTS）。比例由牆厚假設 0.12 m 反推，scaleTrusted 固定為 false。",
+      "天花板高度假設為 2.8 m。",
+      "窗台高度假設為 0.9 m。"
+    ]
+  },
+  "walls": [
+    {
+      "id": "w_7c5bd8a3",
+      "a": {
+        "x": 1.8,
+        "y": 2
+      },
+      "b": {
+        "x": 1.8,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_85be1ec3",
+      "a": {
+        "x": 7.8,
+        "y": 2
+      },
+      "b": {
+        "x": 7.8,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_027f768f",
+      "a": {
+        "x": 1.8,
+        "y": 5.6
+      },
+      "b": {
+        "x": 4,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_0d666a7e",
+      "a": {
+        "x": 5.2,
+        "y": 5.6
+      },
+      "b": {
+        "x": 7.8,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_4bc60b86",
+      "a": {
+        "x": 1.8,
+        "y": 2
+      },
+      "b": {
+        "x": 3.6,
+        "y": 2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_55c49b2a",
+      "a": {
+        "x": 4.5,
+        "y": 2
+      },
+      "b": {
+        "x": 7.8,
+        "y": 2
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    }
+  ],
+  "doors": [
+    {
+      "id": "d_78f3855f",
+      "kind": "swing",
+      "wallId": "w_4bc60b86",
+      "opening": {
+        "a": {
+          "x": 3.6,
+          "y": 2
+        },
+        "b": {
+          "x": 4.5,
+          "y": 2
+        }
+      },
+      "confidence": 0.8,
+      "swing": {
+        "hinge": {
+          "x": 3.6,
+          "y": 2
+        },
+        "leafLengthM": 0.9,
+        "openDirection": "cw",
+        "arcQuarter": true
+      }
+    }
+  ],
+  "windows": [
+    {
+      "id": "win_7564ec46",
+      "wallId": "w_027f768f",
+      "opening": {
+        "a": {
+          "x": 4,
+          "y": 5.6
+        },
+        "b": {
+          "x": 5.2,
+          "y": 5.6
+        }
+      },
+      "confidence": 0.75,
+      "sillHeightM": 0.9,
+      "sillHeightAssumed": true
+    }
+  ]
+}

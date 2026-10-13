@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "meta": {
+    "sourceName": "l-shape.png",
+    "imageWidthPx": 980,
+    "imageHeightPx": 740,
+    "metersPerPixel": 0.01,
+    "scaleTrusted": false,
+    "coordinateOrigin": "bottom-left",
+    "ceilingHeightM": 2.8,
+    "ceilingHeightAssumed": true,
+    "detectionConfidence": 0.62,
+    "notes": [
+      "圖面標註尺寸未採信（NTS）。比例由牆厚假設 0.12 m 反推，scaleTrusted 固定為 false。",
+      "天花板高度假設為 2.8 m。",
+      "窗台高度假設為 0.9 m。",
+      "可能有未辨識開口。下方共線牆段中間有缺口，但沒有門或窗特徵，仍合併為同一道牆。"
+    ]
+  },
+  "walls": [
+    {
+      "id": "w_94241bc0",
+      "a": {
+        "x": 1.5,
+        "y": 1.8
+      },
+      "b": {
+        "x": 1.5,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_356e7f78",
+      "a": {
+        "x": 1.5,
+        "y": 5.6
+      },
+      "b": {
+        "x": 2.6,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_a26cf723",
+      "a": {
+        "x": 3.5,
+        "y": 5.6
+      },
+      "b": {
+        "x": 5,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_b73146ca",
+      "a": {
+        "x": 5,
+        "y": 3.8
+      },
+      "b": {
+        "x": 5,
+        "y": 5.6
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_65db7c49",
+      "a": {
+        "x": 5,
+        "y": 3.8
+      },
+      "b": {
+        "x": 8.2,
+        "y": 3.8
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_532809bc",
+      "a": {
+        "x": 8.2,
+        "y": 1.8
+      },
+      "b": {
+        "x": 8.2,
+        "y": 3.8
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    },
+    {
+      "id": "w_6c88d2b2",
+      "a": {
+        "x": 1.5,
+        "y": 1.8
+      },
+      "b": {
+        "x": 8.2,
+        "y": 1.8
+      },
+      "thicknessM": 0.12,
+      "thicknessAssumed": true
+    }
+  ],
+  "doors": [
+    {
+      "id": "d_bb002a05",
+      "kind": "swing",
+      "wallId": "w_356e7f78",
+      "opening": {
+        "a": {
+          "x": 2.6,
+          "y": 5.6
+        },
+        "b": {
+          "x": 3.5,
+          "y": 5.6
+        }
+      },
+      "confidence": 0.8,
+      "swing": {
+        "hinge": {
+          "x": 2.6,
+          "y": 5.6
+        },
+        "leafLengthM": 0.9,
+        "openDirection": "ccw",
+        "arcQuarter": true
+      }
+    }
+  ],
+  "windows": []
+}

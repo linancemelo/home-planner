@@ -119,8 +119,8 @@ export function AiDiagnosis({ input, result }: AiDiagnosisProps) {
             </CollapsibleTrigger>
             <CollapsibleContent className="border-t">
               <div className="space-y-4 p-4 sm:p-5">
-                <div className="rounded-xl border border-indigo/20 bg-linear-to-r from-indigo/10 to-teal/8 p-4">
-                  <p className="flex items-center gap-2 text-xs font-semibold text-indigo-foreground">
+                <div className="rounded-xl border border-[var(--studio-line)] bg-[var(--studio-accent-soft)] p-4">
+                  <p className="flex items-center gap-2 text-xs font-semibold text-[var(--studio-accent)]">
                     <Sparkles className="size-3.5" />
                     整體評估
                   </p>
@@ -192,23 +192,23 @@ const SECTION_STYLES: Record<
 > = {
   advantages: {
     icon: CheckCircle2,
-    card: "border-teal/25 bg-teal/5",
-    heading: "text-teal-foreground",
-    iconBox: "bg-teal/15 text-teal",
-    dot: "bg-teal",
+    card: "border-[var(--studio-line)] bg-[#f3ebe1]",
+    heading: "text-[var(--studio-teal)]",
+    iconBox: "bg-[var(--studio-teal)]/15 text-[var(--studio-teal)]",
+    dot: "bg-[var(--studio-teal)]",
   },
   risks: {
     icon: ShieldAlert,
-    card: "border-amber/30 bg-amber/8",
-    heading: "text-amber-foreground",
-    iconBox: "bg-amber/20 text-amber-foreground",
-    dot: "bg-amber",
+    card: "border-[var(--studio-line)] bg-[var(--studio-accent-soft)]",
+    heading: "text-[var(--studio-accent)]",
+    iconBox: "bg-[var(--studio-accent)]/15 text-[var(--studio-accent)]",
+    dot: "bg-[var(--studio-accent)]",
   },
   suggestions: {
     icon: Lightbulb,
-    card: "border-indigo/25 bg-indigo/5",
-    heading: "text-indigo-foreground",
-    iconBox: "bg-indigo/15 text-indigo",
-    dot: "bg-indigo",
+    card: "border-[var(--studio-line)] bg-white",
+    heading: "text-[var(--studio-ink)]",
+    iconBox: "bg-[var(--studio-line)] text-[var(--studio-ink)]",
+    dot: "bg-[var(--studio-muted)]",
   },
 };

@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { Baloo_2, Geist_Mono, Huninn } from "next/font/google";
+import "@fontsource/zen-maru-gothic/400.css";
+import "@fontsource/zen-maru-gothic/500.css";
+import "@fontsource/zen-maru-gothic/700.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
@@ -37,8 +40,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="flex min-h-full flex-col font-sans">
         <ThemeProvider
           attribute="class"
-          defaultTheme="system"
-          enableSystem
+          defaultTheme="light"
+          forcedTheme="light"
+          enableSystem={false}
           disableTransitionOnChange
         >
           {children}
