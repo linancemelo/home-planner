@@ -6,7 +6,6 @@ import { AiDiagnosis } from "@/components/ai-diagnosis";
 import { PlannerForm } from "@/components/planner-form";
 import { PlannerResults } from "@/components/planner-results";
 import { PresaleStages } from "@/components/presale-stages";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { TimelineView } from "@/components/timeline-view";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,22 +42,7 @@ export function HomePlannerApp() {
   }
 
   return (
-    <div className="min-h-full bg-[radial-gradient(1200px_circle_at_top_left,oklch(0.92_0.05_175/0.45),transparent_45%),radial-gradient(900px_circle_at_top_right,oklch(0.93_0.06_275/0.35),transparent_40%)] dark:bg-[radial-gradient(1000px_circle_at_top_left,oklch(0.3_0.05_175/0.25),transparent_45%),radial-gradient(800px_circle_at_top_right,oklch(0.28_0.06_275/0.2),transparent_40%)]">
-      <header className="sticky top-0 z-40 border-b bg-background/85 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-3 sm:px-6">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold tracking-tight sm:text-base">
-              買房前資產規劃
-            </p>
-            <p className="hidden text-xs text-muted-foreground sm:block">
-              頭期款、費用與預售分期時間線
-            </p>
-          </div>
-          <ThemeToggle />
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-6xl px-3 py-5 sm:px-6 sm:py-8">
+    <main className="mx-auto max-w-6xl px-3 py-5 sm:px-6 sm:py-8">
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
@@ -141,7 +125,6 @@ export function HomePlannerApp() {
         <p className="px-2 text-center text-xs text-muted-foreground">
           本工具僅供個人財務規劃參考，預售期款時程為示意，不構成投資、貸款或購屋建議。
         </p>
-      </main>
-    </div>
+    </main>
   );
 }

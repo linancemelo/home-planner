@@ -1,5 +1,5 @@
-import { HomePlannerApp } from "@/components/home-planner-app";
+import { AppShell } from "@/components/app-shell";
 
 export default function Home() {
-  return <HomePlannerApp />;
+  return <AppShell />;
 }
