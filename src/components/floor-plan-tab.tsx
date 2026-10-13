@@ -5,7 +5,11 @@ import { PlanSketch } from "@/components/PlanSketch";
 import { UploadPanel } from "@/components/UploadPanel";
 import type { ClaudeWallPlan } from "@/lib/claude-plan";
 import type { CompressedImage } from "@/lib/compress-image";
+import { isStaticExport, withBasePath } from "@/lib/paths";
 import type { TracedPlan } from "@/lib/trace-floor-plan";
+
+const STATIC_API_HINT =
+  "GitHub Pages 為靜態站，暫不支援平面圖 AI 辨識。請本機執行 npm run dev 使用。";
 
 const SIDE_NAV = [
   "展示",
@@ -41,10 +45,15 @@ export function FloorPlanTab() {
 
   async function handleAnalyze() {
     if (!image?.contentWidth || !image.contentHeight) return;
+    if (isStaticExport()) {
+      setError(STATIC_API_HINT);
+      return;
+    }
+
     setAnalyzing(true);
     setError(null);
     try {
-      const response = await fetch("/api/floor-plan", {
+      const response = await fetch(withBasePath("/api/floor-plan"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -53,9 +62,13 @@ export function FloorPlanTab() {
           contentHeight: image.contentHeight,
         }),
       });
-      const body = (await response.json().catch(() => ({}))) as Partial<Recognized> & {
-        error?: string;
-      };
+      const raw = await response.text();
+      let body: Partial<Recognized> & { error?: string } = {};
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        throw new Error(STATIC_API_HINT);
+      }
       if (!response.ok || !body.plan || !body.raw) {
         throw new Error(body.error || "辨識失敗");
       }

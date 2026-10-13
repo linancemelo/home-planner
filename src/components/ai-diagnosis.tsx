@@ -22,11 +22,15 @@ import type {
   PlannerInputWan,
   PlannerResult,
 } from "@/lib/types";
+import { isStaticExport, withBasePath } from "@/lib/paths";
 
 interface AiDiagnosisProps {
   input: PlannerInputWan;
   result: PlannerResult;
 }
+
+const STATIC_API_HINT =
+  "GitHub Pages 為靜態站，暫不支援 AI 診斷。請本機執行 npm run dev 使用。";
 
 export function AiDiagnosis({ input, result }: AiDiagnosisProps) {
   const [loading, setLoading] = useState(false);
@@ -35,20 +39,30 @@ export function AiDiagnosis({ input, result }: AiDiagnosisProps) {
   const [open, setOpen] = useState(true);
 
   async function handleDiagnose() {
+    if (isStaticExport()) {
+      setError(STATIC_API_HINT);
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      const res = await fetch("/api/diagnose", {
+      const res = await fetch(withBasePath("/api/diagnose"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ input, result }),
       });
 
-      const data = (await res.json()) as {
-        diagnosis?: DiagnosisResult;
-        error?: string;
-      };
+      const raw = await res.text();
+      let data: { diagnosis?: DiagnosisResult; error?: string } = {};
+      try {
+        data = JSON.parse(raw) as typeof data;
+      } catch {
+        throw new Error(
+          res.ok ? "診斷內容格式錯誤，請稍後再試" : STATIC_API_HINT
+        );
+      }
 
       if (!res.ok) {
         throw new Error(data.error || "診斷失敗，請稍後再試");
