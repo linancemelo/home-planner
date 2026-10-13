@@ -7,10 +7,21 @@ import { cn } from "@/lib/utils";
 
 type AppTab = "planner" | "floorplan";
 
-const TABS: { id: AppTab; label: string; hint: string }[] = [
-  { id: "planner", label: "資產規劃", hint: "頭期款、房貸與預售分期" },
-  { id: "floorplan", label: "平面／3D", hint: "室內平面圖工作室與 3D 漫遊" },
-];
+const TABS: { id: AppTab; label: string; shortLabel: string; hint: string }[] =
+  [
+    {
+      id: "planner",
+      label: "資產規劃",
+      shortLabel: "規劃",
+      hint: "頭期款、房貸與預售分期",
+    },
+    {
+      id: "floorplan",
+      label: "平面／3D",
+      shortLabel: "平面",
+      hint: "室內平面圖工作室與 3D 漫遊",
+    },
+  ];
 
 export function AppShell() {
   const [tab, setTab] = useState<AppTab>("planner");
@@ -19,12 +30,12 @@ export function AppShell() {
   return (
     <div className="min-h-full bg-[var(--studio-bg)] text-[var(--studio-ink)]">
       <header className="sticky top-0 z-40 border-b border-[var(--studio-line)] bg-[var(--studio-panel)]/95 backdrop-blur">
-        <div className="mx-auto flex h-14 max-w-[1600px] items-center justify-between gap-3 px-4 sm:px-6">
+        <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-6 lg:px-8">
           <div className="min-w-0">
             <p className="truncate text-base font-semibold tracking-wide sm:text-lg">
               Home Planner
             </p>
-            <p className="hidden text-sm text-[var(--studio-muted)] sm:block">
+            <p className="truncate text-sm text-[var(--studio-muted)]">
               {active.hint}
             </p>
           </div>
@@ -32,7 +43,7 @@ export function AppShell() {
           <div
             role="tablist"
             aria-label="主要功能"
-            className="grid grid-cols-2 rounded-lg border border-[var(--studio-line)] bg-white p-1"
+            className="grid w-full grid-cols-2 rounded-lg border border-[var(--studio-line)] bg-white p-1 sm:w-auto sm:min-w-[17rem]"
           >
             {TABS.map((item) => {
               const selected = tab === item.id;
@@ -44,19 +55,18 @@ export function AppShell() {
                   aria-selected={selected}
                   onClick={() => setTab(item.id)}
                   className={cn(
-                    "rounded-md px-4 py-2 text-sm font-medium transition-colors sm:px-5 sm:text-base",
+                    "rounded-md px-3 py-2 text-sm font-medium transition-colors sm:px-5 sm:text-base",
                     selected
                       ? "bg-[var(--studio-accent)] text-white"
                       : "text-[var(--studio-muted)] hover:bg-[var(--studio-accent-soft)] hover:text-[var(--studio-accent)]"
                   )}
                 >
-                  {item.label}
+                  <span className="sm:hidden">{item.shortLabel}</span>
+                  <span className="hidden sm:inline">{item.label}</span>
                 </button>
               );
             })}
           </div>
-
-          <div className="w-10 shrink-0" aria-hidden />
         </div>
       </header>
 

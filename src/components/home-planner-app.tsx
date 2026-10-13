@@ -42,17 +42,17 @@ export function HomePlannerApp() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-      <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="max-w-3xl space-y-2">
-          <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+    <main className="w-full px-4 py-5 sm:px-6 sm:py-7 lg:px-8 xl:px-10">
+      <div className="mb-6 flex flex-col gap-4 sm:mb-8 md:flex-row md:items-end md:justify-between">
+        <div className="min-w-0 max-w-4xl space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
             彈性規劃你的購屋現金流
           </h1>
-          <p className="text-base text-muted-foreground sm:text-lg">
+          <p className="text-sm text-muted-foreground sm:text-base lg:text-lg">
             自備款、購屋費用、房貸月付與預售分期一次看清楚，數字改了結果立刻更新。
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:shrink-0 sm:flex-wrap">
           <Button
             type="button"
             variant="outline"
@@ -73,42 +73,42 @@ export function HomePlannerApp() {
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,28rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,32rem)_minmax(0,1fr)] lg:items-start">
-        <Card className="h-fit border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none lg:sticky lg:top-20">
-          <CardHeader>
-            <CardTitle className="text-xl">規劃條件</CardTitle>
-            <CardDescription className="text-base">
+      <div className="grid grid-cols-1 items-start gap-5 md:grid-cols-[minmax(17rem,22rem)_minmax(0,1fr)] md:gap-6 xl:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(22rem,30rem)_minmax(0,1fr)]">
+        <Card className="h-fit border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none md:sticky md:top-[4.75rem]">
+          <CardHeader className="px-4 sm:px-6">
+            <CardTitle className="text-lg sm:text-xl">規劃條件</CardTitle>
+            <CardDescription className="text-sm sm:text-base">
               金額單位為萬元，全部可即時修改
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="px-4 sm:px-6">
             <PlannerForm value={input} onChange={setInput} />
           </CardContent>
         </Card>
 
-        <div className="min-w-0 space-y-6">
+        <div className="min-w-0 space-y-5 sm:space-y-6">
           <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
-            <CardContent className="pt-6">
+            <CardContent className="px-4 pt-5 sm:px-6 sm:pt-6">
               <PlannerResults result={result} />
             </CardContent>
           </Card>
 
           {input.isPresale ? (
             <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
-              <CardContent className="pt-6">
+              <CardContent className="px-4 pt-5 sm:px-6 sm:pt-6">
                 <PresaleStages input={input} result={result} />
               </CardContent>
             </Card>
           ) : null}
 
           <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
-            <CardContent className="pt-6">
+            <CardContent className="px-4 pt-5 sm:px-6 sm:pt-6">
               <TimelineView result={result} />
             </CardContent>
           </Card>
 
           <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
-            <CardContent>
+            <CardContent className="px-4 sm:px-6">
               <AiDiagnosis
                 key={JSON.stringify(input)}
                 input={input}
@@ -119,8 +119,8 @@ export function HomePlannerApp() {
         </div>
       </div>
 
-      <Separator className="my-10 bg-[var(--studio-line)]" />
-      <p className="px-2 text-center text-sm text-muted-foreground">
+      <Separator className="my-8 bg-[var(--studio-line)] sm:my-10" />
+      <p className="px-2 pb-4 text-center text-sm text-muted-foreground">
         本工具僅供個人財務規劃參考，預售期款時程為示意，不構成投資、貸款或購屋建議。
       </p>
     </main>

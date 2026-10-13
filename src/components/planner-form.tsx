@@ -47,7 +47,7 @@ export function PlannerForm({ value, onChange }: PlannerFormProps) {
                 aria-pressed={active}
                 onClick={() => update("isPresale", option.presale)}
                 className={cn(
-                  "rounded-xl border px-3 py-3 text-sm font-semibold transition-colors",
+                  "rounded-xl border px-2 py-3 text-sm font-semibold transition-colors sm:px-3",
                   active
                     ? "border-indigo bg-indigo text-primary-foreground shadow-sm"
                     : "border-border bg-background/80 text-muted-foreground hover:border-indigo/40 hover:bg-background"
