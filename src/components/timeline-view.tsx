@@ -17,7 +17,7 @@ export function TimelineView({ result }: TimelineViewProps) {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold tracking-tight">資金時間線</h2>
+        <h2 className="gta-title text-lg">資金時間線</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           每年累積現金與達標時間點，進度條對應目標金額
         </p>
@@ -28,7 +28,7 @@ export function TimelineView({ result }: TimelineViewProps) {
         {result.timeline.map((point, index) => (
           <li key={point.year} className="relative flex gap-3 pb-6 last:pb-0">
             {index < result.timeline.length - 1 ? (
-              <span className="absolute top-4 bottom-0 left-[11px] w-0.5 bg-linear-to-b from-teal to-indigo/40" />
+              <span className="absolute top-4 bottom-0 left-[11px] w-0.5 bg-white/25" />
             ) : null}
             <span
               className={cn(
@@ -40,16 +40,16 @@ export function TimelineView({ result }: TimelineViewProps) {
             >
               {point.isTargetYear ? <CheckCircle2 className="size-3.5" /> : null}
             </span>
-            <div className="min-w-0 flex-1 rounded-xl border bg-card p-3 shadow-xs">
+            <div className="min-w-0 flex-1 rounded-2xl border bg-card p-3 shadow-xs">
               <div className="flex items-center justify-between gap-2">
                 <p className="font-medium tabular-nums">{point.year}</p>
-                <p className="text-sm font-semibold tabular-nums text-teal">
+                <p className="gta-num text-lg text-[var(--gta-green)]">
                   {formatYuanAsWan(point.cumulative)} 萬
                 </p>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full bg-linear-to-r from-teal to-amber"
+                  className="h-full rounded-full bg-white"
                   style={{
                     width: `${Math.min(100, point.coveragePercent)}%`,
                   }}
@@ -72,7 +72,7 @@ export function TimelineView({ result }: TimelineViewProps) {
             className="relative flex min-w-max gap-4 pt-2 pb-1"
             style={{ minWidth: `${result.timeline.length * 9}rem` }}
           >
-            <div className="absolute top-6 right-6 left-6 h-1 rounded-full bg-linear-to-r from-teal via-indigo to-amber" />
+            <div className="absolute top-6 right-6 left-6 h-1 rounded-full bg-white/20" />
             {result.timeline.map((point) => (
               <div
                 key={point.year}
@@ -84,7 +84,7 @@ export function TimelineView({ result }: TimelineViewProps) {
                       "flex size-7 items-center justify-center rounded-full border-2 shadow-sm",
                       point.isTargetYear
                         ? "border-teal bg-teal text-primary-foreground"
-                        : "border-white bg-indigo text-[0] dark:border-card"
+                        : "border-white/40 bg-white/15 text-[0]"
                     )}
                   >
                     {point.isTargetYear ? (
@@ -96,21 +96,21 @@ export function TimelineView({ result }: TimelineViewProps) {
                 </div>
                 <div
                   className={cn(
-                    "mt-3 rounded-xl border p-3 text-center shadow-xs",
+                    "mt-3 rounded-2xl border p-3 text-center shadow-xs",
                     point.isTargetYear
                       ? "border-teal/40 bg-teal/10"
                       : "bg-card"
                   )}
                 >
-                  <p className="text-sm font-semibold tabular-nums">
+                  <p className="gta-num text-lg">
                     {point.year}
                   </p>
-                  <p className="mt-1 text-base font-semibold tabular-nums text-teal">
+                  <p className="gta-num mt-1 text-xl text-[var(--gta-green)]">
                     {formatYuanAsWan(point.cumulative)} 萬
                   </p>
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full rounded-full bg-linear-to-r from-teal to-indigo"
+                      className="h-full rounded-full bg-white"
                       style={{
                         width: `${Math.min(100, point.coveragePercent)}%`,
                       }}
@@ -132,7 +132,7 @@ export function TimelineView({ result }: TimelineViewProps) {
         </div>
       </div>
 
-      <div className="hidden overflow-x-auto rounded-xl border sm:block">
+      <div className="hidden overflow-x-auto rounded-2xl border sm:block">
         <table className="w-full min-w-[360px] text-sm">
           <thead className="bg-muted/50 text-left">
             <tr>

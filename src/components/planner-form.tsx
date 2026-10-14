@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { GlassSelect } from "@/components/ui/glass-select";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { maxGracePeriodYears, resolveFeesWan } from "@/lib/calculations";
@@ -26,7 +27,7 @@ export function PlannerForm({ value, onChange }: PlannerFormProps) {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-4 rounded-xl border-2 border-indigo/40 bg-indigo/10 p-4">
+      <div className="space-y-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
         <div className="space-y-1">
           <p className="text-sm font-semibold">這是預售屋嗎？</p>
           <p className="text-xs text-muted-foreground">
@@ -47,10 +48,10 @@ export function PlannerForm({ value, onChange }: PlannerFormProps) {
                 aria-pressed={active}
                 onClick={() => update("isPresale", option.presale)}
                 className={cn(
-                  "rounded-xl border px-2 py-3 text-sm font-semibold transition-colors sm:px-3",
+                  "rounded-full border px-2 py-3 text-sm font-semibold transition-colors sm:px-3",
                   active
-                    ? "border-indigo bg-indigo text-primary-foreground shadow-sm"
-                    : "border-border bg-background/80 text-muted-foreground hover:border-indigo/40 hover:bg-background"
+                    ? "border-transparent bg-white text-[#0b0d12] shadow-[inset_0_-2px_4px_rgba(0,0,0,0.12)]"
+                    : "border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10"
                 )}
               >
                 {option.label}
@@ -145,26 +146,20 @@ export function PlannerForm({ value, onChange }: PlannerFormProps) {
             label="寬限期（年）"
             htmlFor="gracePeriodYears"
           >
-            <select
+            <GlassSelect
               id="gracePeriodYears"
+              ariaLabel="寬限期（年）"
               value={Math.min(
                 value.gracePeriodYears,
                 maxGracePeriodYears(value.loanTermYears)
               )}
-              onChange={(e) =>
-                update("gracePeriodYears", Number(e.target.value))
-              }
-              className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
-            >
-              {Array.from({ length: MAX_GRACE_PERIOD_YEARS + 1 }, (_, year) => {
-                const disabled = year > maxGracePeriodYears(value.loanTermYears);
-                return (
-                  <option key={year} value={year} disabled={disabled}>
-                    {year === 0 ? "不使用寬限期" : `${year} 年`}
-                  </option>
-                );
-              })}
-            </select>
+              onChange={(next) => update("gracePeriodYears", Number(next))}
+              options={Array.from({ length: MAX_GRACE_PERIOD_YEARS + 1 }, (_, year) => ({
+                value: year,
+                label: year === 0 ? "不使用寬限期" : `${year} 年`,
+                disabled: year > maxGracePeriodYears(value.loanTermYears),
+              }))}
+            />
           </Field>
         </div>
       </Section>
@@ -370,10 +365,10 @@ function Section({
     <div
       className={
         tone === "amber"
-          ? "space-y-4 rounded-xl border border-amber/30 bg-amber/10 p-4"
+          ? "space-y-4 rounded-2xl border border-[var(--gta-gold)]/35 bg-[var(--gta-gold)]/10 p-4"
           : tone === "indigo"
-            ? "space-y-4 rounded-xl border border-indigo/25 bg-indigo/5 p-4"
-          : "space-y-4 rounded-xl border border-border/80 bg-muted/20 p-4"
+            ? "space-y-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4"
+          : "space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4"
       }
     >
       <p className="text-xs font-semibold tracking-wide text-muted-foreground">

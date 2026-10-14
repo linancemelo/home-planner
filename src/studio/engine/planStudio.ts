@@ -14,6 +14,8 @@ import { floorMaterials } from '../../plan/data/floorMaterials';
 import { furnitureCatalog } from '../../plan/catalog/furnitureCatalog';
 import { BLUEPRINT_STORAGE_KEY } from '../../plan/types/blueprint';
 import { bindImportWizard } from '../../import-plan/importWizard';
+import { SITE_NAME, SITE_TITLE } from '../../lib/site';
+import { playGlitch } from '../ui/sfx';
 
 let booted = false;
 
@@ -22,7 +24,6 @@ export function bootPlanStudio(_root: HTMLElement): () => void {
   booted = true;
   // Capture for teardown
   const ac = new AbortController();
-  void ac;
 
   /* ===== 2D engine ===== */
 /* ======================= UI 語言：Phase 1 僅繁體中文（台灣）；多語系見 TODO.md ======================= */
@@ -60,7 +61,7 @@ const nm = s => LANG === 'en' ? (NAMES_EN[s] ?? s) : s2t(s);
 // 静态文案：元素上写 data-en / data-en-title，中文原文首次切换时存进 dataset
 function applyStaticLang(){
   document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-Hant-TW';
-  document.title = tr('室內裝修設計', 'Home Planner');
+  document.title = SITE_TITLE;
   // data-en remains for future i18n; currently always render 繁中 via s2t
   document.querySelectorAll('[data-en]').forEach(el => { el.dataset.zh ??= el.textContent; el.textContent = tr(el.dataset.zh, el.dataset.en); });
   document.querySelectorAll('[data-en-title]').forEach(el => { el.dataset.zhTitle ??= el.title; el.title = tr(el.dataset.zhTitle, el.dataset.enTitle); });
@@ -240,7 +241,7 @@ function buildDefs(){
     <pattern id="m-carpet" patternUnits="userSpaceOnUse" width="120" height="120">
       <rect width="120" height="120" fill="#c9c3d3"/><circle cx="30" cy="30" r="8" fill="#bab3c6"/><circle cx="90" cy="90" r="8" fill="#bab3c6"/></pattern>
     <pattern id="grid" patternUnits="userSpaceOnUse" width="1000" height="1000">
-      <path d="M500 0V1000M0 500H1000" stroke="#e5dfd3" stroke-width="8"/><path d="M0 0V1000M0 0H1000" stroke="#d8d0c1" stroke-width="14"/></pattern>`;
+      <path d="M500 0V1000M0 500H1000" stroke="rgba(79,172,254,.12)" stroke-width="8"/><path d="M0 0V1000M0 0H1000" stroke="rgba(79,172,254,.28)" stroke-width="14"/></pattern>`;
 }
 
 /* ======================= 家具图例 ======================= */
@@ -376,19 +377,19 @@ function renderFurn(){
 function renderWalls(){
   $('#gWalls').innerHTML = structuralWalls.map((w,i) => {
     const [x0,y0,x1,y1,k] = w, id = 'w'+i, dem = state.demolished.includes(id);
-    let fill = k==='b' ? (ui.layers.bearing ? '#b8412c' : '#26241f') : k==='low' ? '#e9e3d8' : k==='e' ? '#8f897d' : '#a7a195';
-    let ex = k==='low' ? 'stroke="#8f897d" stroke-width="1" vector-effect="non-scaling-stroke"' : '';
-    if (dem){ fill = 'rgba(198,91,58,.12)'; ex = 'stroke="#c65b3a" stroke-width="1.2" stroke-dasharray="5 3" vector-effect="non-scaling-stroke"'; }
+    let fill = k==='b' ? (ui.layers.bearing ? '#ff3d81' : '#dbe4f5') : k==='low' ? '#2a3554' : k==='e' ? '#8fa0c4' : '#6d7ba0';
+    let ex = k==='low' ? 'stroke="#8fa0c4" stroke-width="1" vector-effect="non-scaling-stroke"' : '';
+    if (dem){ fill = 'rgba(255,61,129,.12)'; ex = 'stroke="#ff3d81" stroke-width="1.2" stroke-dasharray="5 3" vector-effect="non-scaling-stroke"'; }
     return `<rect class="wall" data-wall="${id}" x="${x0}" y="${y0}" width="${x1-x0}" height="${y1-y0}" fill="${fill}" ${ex}/>`;
   }).join('');
 }
 
 function renderOpenings(){
-  const WS = 'stroke="#4f7394" stroke-width="1" vector-effect="non-scaling-stroke"';
+  const WS = 'stroke="#4facfe" stroke-width="1" vector-effect="non-scaling-stroke"';
   let s = '';
   windowOpenings.forEach(([x0,y0,x1,y1]) => {
     const w = x1-x0, h = y1-y0;
-    s += `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="#f7fbfd" ${WS}/>`;
+    s += `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="#10294a" ${WS}/>`;
     if (w >= h) [1/3,2/3].forEach(t => s += `<line x1="${x0}" y1="${y0+h*t}" x2="${x1}" y2="${y0+h*t}" ${WS}/>`);
     else [1/3,2/3].forEach(t => s += `<line x1="${x0+w*t}" y1="${y0}" x2="${x0+w*t}" y2="${y1}" ${WS}/>`);
   });
@@ -397,7 +398,7 @@ function renderOpenings(){
     const [hx,hy] = d.h, L = d.len, T = 40;
     const ox = hx + d.o[0]*L, oy = hy + d.o[1]*L, cx = hx + d.c[0]*L, cy = hy + d.c[1]*L;
     const sweep = d.o[0]*d.c[1] - d.o[1]*d.c[0] > 0 ? 1 : 0;
-    const col = d.entry ? '#b5653a' : '#3d3a34';
+    const col = d.entry ? '#00f2fe' : '#3d3a34';
     s += `<polygon points="${hx},${hy} ${ox},${oy} ${ox+d.c[0]*T},${oy+d.c[1]*T} ${hx+d.c[0]*T},${hy+d.c[1]*T}" fill="#fff" stroke="${col}" stroke-width="${d.entry?1.8:1}" vector-effect="non-scaling-stroke"/>`;
     s += `<path d="M${ox} ${oy}A${L} ${L} 0 0 ${sweep} ${cx} ${cy}" fill="none" ${DS} stroke-dasharray="5 3" opacity=".7"/>`;
   });
@@ -411,8 +412,8 @@ function renderOpenings(){
     const [x0,y0,x1,y1] = entryDoor.rect;
     const mx = (x0+x1)/2, my = (y0+y1)/2;
     const labelX = Math.min(x0, x1) - 1200, labelY = my;
-    s += `<path d="M${labelX} ${labelY}H${Math.min(x0,x1)-80}M${Math.min(x0,x1)-280} ${labelY-155}L${Math.min(x0,x1)-80} ${labelY}L${Math.min(x0,x1)-280} ${labelY+155}" fill="none" stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke"/>
-          <text x="${labelX}" y="${labelY-160}" font-size="200" fill="#b5653a">${tr('入户','Entry')}</text>`;
+    s += `<path d="M${labelX} ${labelY}H${Math.min(x0,x1)-80}M${Math.min(x0,x1)-280} ${labelY-155}L${Math.min(x0,x1)-80} ${labelY}L${Math.min(x0,x1)-280} ${labelY+155}" fill="none" stroke="#00f2fe" stroke-width="2" vector-effect="non-scaling-stroke"/>
+          <text x="${labelX}" y="${labelY-160}" font-size="200" fill="#00f2fe">${tr('入户','Entry')}</text>`;
   }
   $('#gOpen').innerHTML = s;
 }
@@ -428,7 +429,7 @@ function renderLabels(){
 }
 
 function renderDims(){
-  const DC = '#7d7160', LS = `stroke="${DC}" stroke-width="1" vector-effect="non-scaling-stroke"`, TK = `stroke="${DC}" stroke-width="2" vector-effect="non-scaling-stroke"`;
+  const DC = '#7fd8ff', LS = `stroke="${DC}" stroke-width="1" vector-effect="non-scaling-stroke"`, TK = `stroke="${DC}" stroke-width="2" vector-effect="non-scaling-stroke"`;
   const txt = (x,y,v,rot) => `<text x="${x}" y="${y}" font-size="${v<400?140:200}" text-anchor="middle" fill="${DC}" ${rot?`transform="rotate(-90 ${x} ${y})"`:''}>${v}</text>`;
   const chain = (horiz, at, start, segs) => {
     const pts = [start]; segs.forEach(v => pts.push(pts[pts.length-1]+v));
@@ -469,15 +470,15 @@ function renderMeasure(){
     const L = Math.hypot(b.x-a.x, b.y-a.y); if (L < 1) return '';
     let ang = Math.atan2(b.y-a.y, b.x-a.x)*180/Math.PI; if (ang > 90 || ang < -90) ang += 180;
     const mx = (a.x+b.x)/2, my = (a.y+b.y)/2, nx = -(b.y-a.y)/L*5*k, ny = (b.x-a.x)/L*5*k;
-    const col = tmp ? '#2f5d62' : '#b5653a', S = `stroke="${col}" stroke-width="1.5" vector-effect="non-scaling-stroke"`;
+    const col = tmp ? '#8b5cf6' : '#00f2fe', S = `stroke="${col}" stroke-width="1.5" vector-effect="non-scaling-stroke"`;
     return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" ${S}/>
       <line x1="${a.x-nx}" y1="${a.y-ny}" x2="${a.x+nx}" y2="${a.y+ny}" ${S}/><line x1="${b.x-nx}" y1="${b.y-ny}" x2="${b.x+nx}" y2="${b.y+ny}" ${S}/>
       <text x="${mx}" y="${my-5*k}" font-size="${fs}" text-anchor="middle" fill="${col}" font-weight="600" transform="rotate(${ang} ${mx} ${my})"
-        stroke="#fff" stroke-width="${3.5*k}" paint-order="stroke">${Math.round(L)} mm</text>`;
+        stroke="#0b1122" stroke-width="${3.5*k}" paint-order="stroke">${Math.round(L)} mm</text>`;
   };
   let s = state.measures.map(m => one(m.a,m.b)).join('');
   if (ui.mA && ui.mCur) s += one(ui.mA, ui.mCur, true);
-  if (ui.mA) s += `<circle cx="${ui.mA.x}" cy="${ui.mA.y}" r="${3*k}" fill="#2f5d62"/>`;
+  if (ui.mA) s += `<circle cx="${ui.mA.x}" cy="${ui.mA.y}" r="${3*k}" fill="#8b5cf6"/>`;
   $('#gMeasure').innerHTML = s;
 }
 
@@ -487,7 +488,7 @@ function renderSel(){
     const f = getF(ui.sel.id);
     if (f){
       // 触屏上手柄更大、离家具更远，并各带一圈透明的大热区
-      const p = 5*k, A = 'stroke="#b5653a" vector-effect="non-scaling-stroke"', hs = COARSE ? 1.7 : 1, ro = (COARSE ? 40 : 26)*k, hit = (COARSE ? 24 : 11)*k;
+      const p = 5*k, A = 'stroke="#00f2fe" vector-effect="non-scaling-stroke"', hs = COARSE ? 1.7 : 1, ro = (COARSE ? 40 : 26)*k, hit = (COARSE ? 24 : 11)*k;
       const sx = f.w/2+p, sy = f.d/2+p;
       s += `<g transform="translate(${f.cx} ${f.cy}) rotate(${f.rot})">
         <rect x="${-f.w/2-p}" y="${-f.d/2-p}" width="${f.w+2*p}" height="${f.d+2*p}" fill="none" ${A} stroke-width="1.5" stroke-dasharray="5 3" pointer-events="none"/>
@@ -495,20 +496,20 @@ function renderSel(){
         <circle data-handle="rot" cx="0" cy="${-f.d/2-ro}" r="${hit}" fill="transparent"/>
         <circle data-handle="rot" cx="0" cy="${-f.d/2-ro}" r="${6*hs*k}" fill="#fff" ${A} stroke-width="1.5"><title>${tr('拖动旋转（Shift 自由角度）','Drag to rotate (Shift for free angle)')}</title></circle>
         <circle data-handle="size" cx="${sx}" cy="${sy}" r="${hit}" fill="transparent"/>
-        <rect data-handle="size" x="${sx-5*hs*k}" y="${sy-5*hs*k}" width="${10*hs*k}" height="${10*hs*k}" fill="#b5653a"><title>${tr('拖动调整尺寸','Drag to resize')}</title></rect></g>`;
+        <rect data-handle="size" x="${sx-5*hs*k}" y="${sy-5*hs*k}" width="${10*hs*k}" height="${10*hs*k}" fill="#00f2fe"><title>${tr('拖动调整尺寸','Drag to resize')}</title></rect></g>`;
       const {hh} = aabb(f);
-      s += `<text x="${f.cx}" y="${f.cy+hh+24*k}" font-size="${12*k}" text-anchor="middle" fill="#b5653a" font-weight="600" pointer-events="none"
-        stroke="#fff" stroke-width="${3*k}" paint-order="stroke">${f.w} × ${f.d}</text>`;
+      s += `<text x="${f.cx}" y="${f.cy+hh+24*k}" font-size="${12*k}" text-anchor="middle" fill="#00f2fe" font-weight="600" pointer-events="none"
+        stroke="#0b1122" stroke-width="${3*k}" paint-order="stroke">${f.w} × ${f.d}</text>`;
     }
   } else if (ui.sel?.kind === 'room'){
     const r = planRooms.find(r => r.id === ui.sel.id);
-    s += `<polygon points="${r.poly.map(p=>p.join(',')).join(' ')}" fill="rgba(181,101,58,.08)" stroke="#b5653a" stroke-width="2" vector-effect="non-scaling-stroke" pointer-events="none"/>`;
+    s += `<polygon points="${r.poly.map(p=>p.join(',')).join(' ')}" fill="rgba(0,242,254,.10)" stroke="#00f2fe" stroke-width="2" vector-effect="non-scaling-stroke" pointer-events="none"/>`;
   }
   $('#gSel').innerHTML = s;
 }
 
 function renderAll(){
-  renderGrid(); renderRooms(); renderFurn(); renderWalls(); renderLabels(); renderMeasure(); renderSel(); renderPanel(); updateHeader();
+  renderGrid(); renderRooms(); renderFurn(); renderWalls(); renderLabels(); renderMeasure(); renderSel(); renderPanel(); updateHeader(); updateHud();
   window.View3D?.sync();
 }
 
@@ -636,6 +637,10 @@ function syncPaneBtns(){
 }
 function closeDrawers(){ if (narrow()) drawer(null); }
 
+function glitch(){
+  playGlitch();
+}
+
 function roomPanel(r){
   const st = state.rooms[r.id], a = area(r.poly), [x0,y0,x1,y1] = bbox(r.poly), inside = state.furniture.filter(f => f.cx>x0&&f.cx<x1&&f.cy>y0&&f.cy<y1);
   const mats = Object.entries(floorMaterials).map(([k,m]) => `<button class="mat ${k===st.mat?'hps-active':''}" data-mat="${k}"><i style="background:${m.sw}"></i><span>${nm(m.name)}</span></button>`).join('');
@@ -655,7 +660,12 @@ function roomPanel(r){
 function bindRoomPanel(){
   const id = ui.sel.id;
   $('#rName').onchange = e => mutate(() => state.rooms[id].name = e.target.value.trim() || state.rooms[id].name);
-  document.querySelectorAll('#panel [data-mat]').forEach(b => b.onclick = () => mutate(() => state.rooms[id].mat = b.dataset.mat));
+  document.querySelectorAll('#panel [data-mat]').forEach(b => b.onclick = () => {
+    const changed = state.rooms[id].mat !== b.dataset.mat;
+    if (changed) glitch();
+    mutate(() => state.rooms[id].mat = b.dataset.mat);
+    if (changed) mission(tr('空間重組完成', 'Space rebuilt'), `${nm(state.rooms[id].name)} · ${nm(floorMaterials[b.dataset.mat].name)}`);
+  });
   document.querySelectorAll('#panel tr[data-fid]').forEach(tr => tr.onclick = () => select({kind:'furn', id:tr.dataset.fid}));
   $('#back').onclick = () => select(null);
 }
@@ -758,13 +768,63 @@ function applyView(){
   const nice = [100,200,500,1000,2000,5000].find(v => v*view.s >= 60) || 5000;
   $('#sbBar').style.width = nice*view.s + 'px';
   $('#sbText').textContent = nice >= 1000 ? `${nice/1000} m` : `${nice} mm`;
-  renderSel(); renderMeasure();
+  renderSel(); renderMeasure(); radarPlan();
+}
+// 桌面版的面板浮在畫布上方，置中戶型時要避開它們
+function fitInsets(){
+  const z = {l:0, t:0, r:0, b:0};
+  if (narrow()) return z;
+  const s = svg.getBoundingClientRect();
+  const box = q => { const el = $(q); return el && el.offsetParent && getComputedStyle(el).position === 'absolute' ? el.getBoundingClientRect() : null; };
+  const top = box('.hps-top'), dock = box('.hps-dock'), side = box('aside.hps-aside'), lib = box('aside.hps-lib');
+  if (top) z.t = top.bottom - s.top;
+  if (dock) z.t = Math.max(z.t, dock.bottom - s.top);
+  if (side) z.r = s.right - side.left;
+  if (lib) z.l = Math.max(z.l, lib.right - s.left);
+  return z;
 }
 function fitView(){
-  const W = svg.clientWidth, H = svg.clientHeight;
-  view.s = Math.min(W/BOUNDS.w, H/BOUNDS.h);
-  view.x0 = BOUNDS.x - (W/view.s - BOUNDS.w)/2; view.y0 = BOUNDS.y - (H/view.s - BOUNDS.h)/2;
+  const W = svg.clientWidth, H = svg.clientHeight, z = fitInsets(), pad = z.t ? 16 : 0;
+  const w = Math.max(80, W - z.l - z.r - pad*2), h = Math.max(80, H - z.t - z.b - pad*2);
+  view.s = Math.min(w/BOUNDS.w, h/BOUNDS.h);
+  view.x0 = BOUNDS.x - (z.l + pad + (w - BOUNDS.w*view.s)/2)/view.s;
+  view.y0 = BOUNDS.y - (z.t + pad + (h - BOUNDS.h*view.s)/2)/view.s;
   applyView();
+}
+
+/* ======================= GTA 雷達小地圖 / HUD ======================= */
+// 雷達直接 <use> 平面圖的房間、牆、家具圖層；只改 transform，不重畫
+function radarAt(cx, cy, R, deg){
+  const w = $('#radarWorld'); if (!w) return;
+  $('#radarRot').setAttribute('transform', `rotate(${deg.toFixed(1)})`);
+  w.setAttribute('transform', `scale(${(50/R).toFixed(5)}) translate(${-cx.toFixed(0)} ${-cy.toFixed(0)})`);
+}
+function radarPlan(){
+  if (is3D()) return;
+  radarAt(BOUNDS.x + BOUNDS.w/2, BOUNDS.y + BOUNDS.h/2, Math.max(BOUNDS.w, BOUNDS.h*100/76)*.5, 0);
+  const v = $('#radarView'); if (!v) return;
+  v.setAttribute('x', view.x0); v.setAttribute('y', view.y0);
+  v.setAttribute('width', svg.clientWidth/view.s); v.setAttribute('height', svg.clientHeight/view.s);
+}
+function updateHud(){
+  const counted = planRooms.filter(r => r.counted !== false);
+  const tot = counted.reduce((a,r) => a + area(r.poly), 0);
+  const done = counted.filter(r => { const [x0,y0,x1,y1] = bbox(r.poly); return state.furniture.some(f => f.cx>x0&&f.cx<x1&&f.cy>y0&&f.cy<y1); }).length;
+  const stars = counted.length ? Math.round(done / counted.length * 5) : 0;
+  const el = $('#hudArea'); if (!el) return;
+  el.textContent = fmt(tot);
+  $('#hudPing').textContent = tr(`${sqmToPing(tot).toFixed(2)} 坪`, `${sqmToPing(tot).toFixed(2)} ping`);
+  $('#hudFurn').textContent = state.furniture.length;
+  $('#hudStars').innerHTML = Array.from({length:5}, (_, i) => `<i class="${i < stars ? 'on' : ''}">★</i>`).join('');
+  $('#hudStars').title = tr(`已布置 ${done}/${counted.length} 个房间`, `${done}/${counted.length} rooms furnished`);
+}
+// GTA「任務完成」橫幅
+let missionTimer = 0;
+function mission(title, sub){
+  const m = $('#mission'); if (!m) return;
+  $('#missionT').textContent = title; $('#missionS').textContent = sub || '';
+  m.classList.remove('show'); void m.offsetWidth; m.classList.add('show');
+  clearTimeout(missionTimer); missionTimer = setTimeout(() => m.classList.remove('show'), 2400);
 }
 function zoomAt(ns, mx, my){
   ns = Math.max(.012, Math.min(2, ns));
@@ -981,7 +1041,9 @@ let libDrag = null;
 function dropPoint(x, y){
   const r = $('#stage').getBoundingClientRect();
   if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
-  if (document.elementFromPoint(x, y)?.closest('aside.hps-drawer-open,#fab,#walkOverlay,#joy,#walkExit')) return null;
+  const hit = document.elementFromPoint(x, y);
+  if (hit?.closest('aside.hps-drawer-open,#fab,#walkOverlay,#joy,#walkExit')) return null;
+  if (!narrow() && hit?.closest('.hps-top,.hps-dock,.hps-rail,aside.hps-lib,aside.hps-aside,.hps-radar,.hps-hud,.hps-dials,.hps-chips')) return null;
   if (is3D()) return window.View3D?.groundAt(x, y) || null;
   const p = toMM({clientX:x, clientY:y}); return {x:p.x, y:p.y, s:view.s};
 }
@@ -1032,15 +1094,15 @@ function exportPNG(){
   clone.setAttribute('viewBox', `${BOUNDS.x} ${BOUNDS.y} ${BOUNDS.w} ${BOUNDS.h}`);
   clone.setAttribute('width', W); clone.setAttribute('height', H);
   clone.querySelector('#gSel').innerHTML = '';
-  clone.querySelector('#gGrid').innerHTML = `<rect x="-20000" y="-20000" width="55000" height="55000" fill="${ui.layers.grid?'url(#grid)':'#f7f4ee'}"/>`;
+  clone.querySelector('#gGrid').innerHTML = `<rect x="-20000" y="-20000" width="55000" height="55000" fill="${ui.layers.grid?'url(#grid)':'#0b1122'}"/>`;
   const bg = document.createElementNS('http://www.w3.org/2000/svg','rect');
-  Object.entries({x:-20000,y:-20000,width:55000,height:55000,fill:'#f7f4ee'}).forEach(([k,v]) => bg.setAttribute(k,v));
+  Object.entries({x:-20000,y:-20000,width:55000,height:55000,fill:'#0b1122'}).forEach(([k,v]) => bg.setAttribute(k,v));
   clone.insertBefore(bg, clone.querySelector('#gGrid'));
   const img = new Image();
   img.onload = () => {
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
     cv.getContext('2d').drawImage(img, 0, 0, W, H);
-    cv.toBlob(b => download(tr('室內裝修方案', 'home-planner') + '.png', b));
+    cv.toBlob(b => download(`${SITE_NAME}-空間方案.png`, b));
   };
   img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(clone));
 }
@@ -1107,11 +1169,14 @@ if (navigator.standalone || matchMedia('(display-mode: standalone)').matches) $(
 $('#tgLib').onclick = () => drawer('lib');
 $('#tgPanel').onclick = () => drawer('panel');
 // 触屏上点菜单以外的地方收起「文件」菜单
-document.addEventListener('pointerdown', e => { const m = $('details.hps-menu'); if (m.open && !m.contains(e.target)) m.open = false; });
+document.addEventListener('pointerdown', e => {
+  const m = $('details.hps-menu');
+  if (m?.open && !m.contains(e.target)) m.open = false;
+}, { signal: ac.signal });
 matchMedia('(max-width:1100px)').addEventListener('change', () => drawer(null));
 drawer(null);                                  // 恢复上次的面板收起状态
 $('#exportPng').onclick = exportPNG;
-$('#exportJson').onclick = () => download(tr('室內裝修方案', 'home-planner') + '.json', new Blob([JSON.stringify(state, null, 2)], {type:'application/json'}));
+$('#exportJson').onclick = () => download(`${SITE_NAME}-空間方案.json`, new Blob([JSON.stringify(state, null, 2)], {type:'application/json'}));
 $('#importJson').onclick = () => $('#fileIn').click();
 $('#fileIn').onchange = e => {
   const file = e.target.files[0]; if (!file) return;
@@ -1193,7 +1258,7 @@ const stage = $('#stage'), host = $('#view3d');
 let OX = blueprint.origin?.ox ?? 6000, OY = blueprint.origin?.oy ?? 5300; const H = 2.8, FOV = 45;       // 户型中心放在世界原点，层高 2.8 m
 const wx = x => (x - OX) / 1000, wz = y => (y - OY) / 1000, M = v => v / 1000;
 const SW = () => stage.clientWidth, SH = () => stage.clientHeight;
-const opt = {cut:2.8, furn:true, labels:true, night:false, hour:10, mode:'orbit'};
+const opt = {cut:2.8, furn:true, labels:true, night:false, hour:10, clock:10, lamp:.6, mode:'orbit'};
 
 let inited = false, active = false, raf = 0, anim = null, fly = null;
 let renderer, labelRenderer, scene, camera, orbit, walkCtl, hemi, sun, ground, glassMat, wallMat, capMat, frameMat;
@@ -1223,12 +1288,12 @@ function init(){
   walkCtl.addEventListener('lock', () => { $('#walkOverlay').style.display = 'none'; $('#cross').style.display = 'block'; });
   walkCtl.addEventListener('unlock', () => { if (opt.mode === 'walk'){ $('#walkOverlay').style.display = 'flex'; $('#cross').style.display = 'none'; } });
 
-  hemi = new THREE.HemisphereLight(0xfff8ee, 0xb9a88f, 1.1);
-  sun = new THREE.DirectionalLight(0xfff1dd, 2.6);
+  hemi = new THREE.HemisphereLight(0xf4f7ff, 0xb7c3da, 1.1);
+  sun = new THREE.DirectionalLight(0xfff6ea, 2.6);
   sun.castShadow = true; sun.shadow.mapSize.setScalar(COARSE ? 2048 : 4096);   // 平板 GPU 用小一点的阴影贴图
   Object.assign(sun.shadow.camera, {left:-11, right:11, top:11, bottom:-11, near:1, far:60});
   sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.02;
-  ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), new THREE.MeshStandardMaterial({color:0xf2eee7, roughness:1}));
+  ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), new THREE.MeshStandardMaterial({color:0x141b2e, roughness:1}));
   ground.rotation.x = -Math.PI/2; ground.position.y = -0.015; ground.receiveShadow = true;
   scene.add(hemi, sun, sun.target, ground);
 
@@ -1242,7 +1307,8 @@ function init(){
   const cv = renderer.domElement; let downAt = null, look = null;
   cv.addEventListener('pointerdown', e => {
     downAt = [e.clientX, e.clientY]; closeDrawers();
-    if (touchWalk && !look){ look = {id:e.pointerId, x:e.clientX, y:e.clientY}; cv.setPointerCapture(e.pointerId); }
+    // 沒鎖住滑鼠時，在畫面上拖曳也能轉向（指標鎖定在內嵌頁面常會失敗）
+    if (opt.mode === 'walk' && !walkCtl.isLocked && !look){ look = {id:e.pointerId, x:e.clientX, y:e.clientY}; cv.setPointerCapture(e.pointerId); }
   });
   cv.addEventListener('pointermove', e => {
     if (!look || e.pointerId !== look.id) return;
@@ -2067,13 +2133,21 @@ function applyLight(){
   sun.color.setHSL(.09, .5 + warm*.4, .92 - warm*.12);
   sun.intensity = opt.night ? .05 : 1.4 + Math.sin(Math.PI*t)*1.6;
   hemi.intensity = opt.night ? .12 : 1.1;
-  scene.background = new THREE.Color(opt.night ? 0x1c2130 : 0xf7f4ee);
-  ground.material.color.set(opt.night ? 0x2a2e38 : 0xf2eee7);
-  lampG.children.forEach(o => { if (o.isPointLight) o.intensity = opt.night ? 6 : 0; else o.material.emissiveIntensity = opt.night ? 2 : .3; });
+  scene.background = new THREE.Color(opt.night ? 0x05070f : 0x0b1122);
+  ground.material.color.set(opt.night ? 0x0a0f1c : 0x141b2e);
+  lampG.children.forEach(o => { if (o.isPointLight) o.intensity = opt.lamp * (opt.night ? 10 : 2.5); else o.material.emissiveIntensity = opt.lamp * (opt.night ? 3.2 : .8); });
   renderer.toneMappingExposure = opt.night ? 1.25 : 1.05;
   envK = opt.night ? .15 : 1; matCache.forEach(m => { if (m.envMap) m.envMapIntensity = m.userData.env*envK; });
-  const h = Math.floor(opt.hour), m = Math.round((opt.hour - h)*60);
+  const c = opt.night ? Math.max(opt.clock, 19) : opt.hour, h = Math.floor(c), m = Math.round((c - h)*60);
   $('#sunT').textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  $('#lampT').textContent = Math.round(opt.lamp * 100);
+  $('#barSun').style.width = (opt.night ? 4 : 18 + Math.sin(Math.PI*t)*82) + '%';
+  $('#barLamp').style.width = Math.round(opt.lamp * 100) + '%';
+}
+function setClock(v){
+  opt.clock = v; opt.hour = Math.min(v, 18); opt.night = v >= 19;
+  document.querySelector('#toggles3d [data-t="night"]')?.classList.toggle('hps-active', opt.night);
+  applyLight();
 }
 
 /* ======================= 相机位姿 / 动画 ======================= */
@@ -2193,7 +2267,7 @@ function updateSel(){
     selKey = key;
     if (selHelper){ scene.remove(selHelper); selHelper.geometry.dispose(); selHelper = null; }
     const g = key && furnG.children.find(g => g.userData.fid === key);
-    if (g){ selHelper = new THREE.BoxHelper(g, 0xb5653a); scene.add(selHelper); }
+    if (g){ selHelper = new THREE.BoxHelper(g, 0x00f2fe); scene.add(selHelper); }
   }
   if (selHelper) selHelper.update();
 }
@@ -2234,26 +2308,53 @@ function bindJoystick(){
   const end = e => { if (e.pointerId !== joy.id) return; joy.id = null; joy.x = joy.y = 0; knob.style.transform = ''; };
   el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
 }
+/** 沿牆面法線往兩側找不被牆擋住的落點；離戶型中心較遠的一側當門外 */
+function spawnWalk(){
+  const entry = swingDoors.find(d => d.entry) || swingDoors[0];
+  if (!entry){
+    camera.position.set(wx(BOUNDS.x + BOUNDS.w*0.2), 1.6, wz(BOUNDS.y + BOUNDS.h*0.8));
+    camera.lookAt(wx(OX), 1.5, wz(OY));
+    unstickWalk();
+    return;
+  }
+  const [x0,y0,x1,y1] = entry.rect;
+  const mx = (x0+x1)/2, my = (y0+y1)/2;
+  const nx = (x1 - x0) <= (y1 - y0) ? 1 : 0, ny = nx ? 0 : 1;
+  const side = (sx, sy) => {
+    for (let dist = 450; dist <= 2600; dist += 120){
+      const p = [mx + sx*dist, my + sy*dist];
+      if (!blocked(wx(p[0]), wz(p[1]), .28)) return p;
+    }
+    return null;
+  };
+  const a = side(nx, ny), b = side(-nx, -ny);
+  const score = p => p ? (p[0] - OX)**2 + (p[1] - OY)**2 : -1;
+  const outside = score(a) >= score(b) ? (a || b) : (b || a);
+  const inward = outside && outside === a ? (b || [mx - nx*900, my - ny*900]) : (a || [mx + nx*900, my + ny*900]);
+  const stand = outside || [mx, my];
+  camera.position.set(wx(stand[0]), 1.6, wz(stand[1]));
+  camera.lookAt(wx(inward[0]), 1.5, wz(inward[1]));
+  unstickWalk();
+}
+function unstickWalk(){
+  const p = camera.position;
+  if (!blocked(p.x, p.z, .18)) return;
+  for (let r = .2; r <= 2.4; r += .15){
+    for (let i = 0; i < 16; i++){
+      const a = i / 16 * Math.PI * 2, x = p.x + Math.cos(a)*r, z = p.z + Math.sin(a)*r;
+      if (!blocked(x, z, .18)){ p.x = x; p.z = z; return; }
+    }
+  }
+}
 function setMode(m){
   if (anim) return;
   opt.mode = m; syncModeBtns();
+  $('.hps-shell')?.classList.toggle('hps-walking', m === 'walk');
   if (m === 'walk'){
     select(null);
     if (opt.cut < H){ opt.cut = H; syncCutBtns(); sync(); }
     orbit.enabled = false; fly = null;
-    {
-      const entry = swingDoors.find(d => d.entry) || swingDoors[0];
-      if (entry){
-        const [x0,y0,x1,y1] = entry.rect;
-        const mx = (x0+x1)/2, my = (y0+y1)/2;
-        const outside = entry.c ? [mx - entry.c[0]*1200, my - entry.c[1]*1200] : [mx - 1200, my];
-        const inside = entry.c ? [mx + entry.c[0]*1800, my + entry.c[1]*1800] : [mx + 1800, my];
-        camera.position.set(wx(outside[0]), 1.6, wz(outside[1])); camera.lookAt(wx(inside[0]), 1.5, wz(inside[1]));
-      } else {
-        camera.position.set(wx(BOUNDS.x + BOUNDS.w*0.2), 1.6, wz(BOUNDS.y + BOUNDS.h*0.8));
-        camera.lookAt(wx(OX), 1.5, wz(OY));
-      }
-    }
+    spawnWalk();
     $('#walkOverlay').style.display = 'flex';
     syncHint3d();
   } else {
@@ -2275,7 +2376,8 @@ function blocked(x, z, r = .22){
   return false;
 }
 function stepWalk(dt){
-  if (!walkCtl.isLocked && !touchWalk) return;
+  // 不必等指標鎖定：WASD／方向鍵一進漫遊就能走，滑鼠鎖定只負責轉向
+  if (blocked(camera.position.x, camera.position.z, .05)) unstickWalk();
   const sp = (keys.ShiftLeft || keys.ShiftRight ? 2.6 : 1.4) * dt, fwd = new THREE.Vector3();
   camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
   const right = new THREE.Vector3(-fwd.z, 0, fwd.x), mv = new THREE.Vector3();
@@ -2291,6 +2393,7 @@ function stepWalk(dt){
 }
 addEventListener('keydown', e => {
   if (!active || e.target.matches('input,select,textarea')) return;
+  if (opt.mode === 'walk' && /^(Key[WASD]|Arrow)/.test(e.code)) e.preventDefault();
   keys[e.code] = true;
   if (opt.mode === 'walk' && e.code === 'KeyE'){ const h = pick(); if (h?.door && h.dist < 2.5) h.door.open = !h.door.open; }
 });
@@ -2303,7 +2406,7 @@ function syncWalkTexts(){
   const t = COARSE
     ? [tr('点击开始，从入户门进入', 'Tap to start at the front door'), tr('左下摇杆移动 · 在画面上拖动转向', 'Joystick moves · drag on screen to look'),
        tr('点门开关 · 点「退出漫游」回到鸟瞰', 'Tap doors to open · "Exit walk" returns to orbit')]
-    : [tr('点击开始，从入户门进入', 'Click to start at the front door'),
+    : [tr('已可用键盘走动，点击画面后用鼠标转向', 'You can walk now — click to look with the mouse'),
        tr('<kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> 移动 · 鼠标转向 · <kbd>Shift</kbd> 快走', '<kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> move · mouse looks · <kbd>Shift</kbd> runs'),
        tr('<kbd>E</kbd> 开关正前方的门 · <kbd>Esc</kbd> 暂停', '<kbd>E</kbd> opens the door ahead · <kbd>Esc</kbd> pauses')];
   t.forEach((h, i) => $('#wo' + (i + 1)).innerHTML = h);
@@ -2324,9 +2427,14 @@ function bindUI(){
     const k = b.dataset.t; opt[k] = !opt[k]; b.classList.toggle('hps-active', opt[k]);
     if (k === 'furn'){ furnG.visible = opt.furn; if (!opt.furn && ui.sel?.kind === 'furn') select(null); }
     if (k === 'labels') showLabels(opt.labels && opt.mode === 'orbit' && !anim);
-    if (k === 'night') applyLight();
+    if (k === 'night'){
+      const sunIn = $('#sun');
+      opt.clock = opt.night ? 20 : opt.hour; sunIn.value = opt.clock; sunIn.dispatchEvent(new Event('hps-sync'));
+      applyLight();
+    }
   });
-  $('#sun').oninput = e => { opt.hour = +e.target.value; applyLight(); };
+  $('#sun').oninput = e => setClock(+e.target.value);
+  $('#lamp').oninput = e => { opt.lamp = +e.target.value / 100; applyLight(); };
 }
 
 /* ======================= 主循环 ======================= */
@@ -2341,11 +2449,21 @@ function loop(){
   else stepWalk(dt);
   doors.forEach(d => { const tg = d.open ? d.a1 : d.a0; d.cur += (tg - d.cur) * Math.min(1, dt*6); d.pivot.rotation.y = d.cur; });
   updateSel();
+  radar3D();
   renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }
+// 雷達跟著鏡頭轉：上方永遠是視線方向，漫遊時以人為中心並拉近
+const radarDir = new THREE.Vector3();
+function radar3D(){
+  const walk = opt.mode === 'walk', p = walk ? camera.position : orbit.target;
+  camera.getWorldDirection(radarDir);
+  const flat = Math.hypot(radarDir.x, radarDir.z) < .05;
+  const deg = flat ? 0 : -90 - Math.atan2(radarDir.z, radarDir.x) * 180 / Math.PI;
+  radarAt(p.x*1000 + OX, p.z*1000 + OY, walk ? 4200 : 7000, deg);
+}
 
-function shot(){ const a = document.createElement('a'); a.download = tr('室內裝修方案', 'home-planner') + '-3D.png'; a.href = renderer.domElement.toDataURL('image/png'); a.click(); }
+function shot(){ const a = document.createElement('a'); a.download = `${SITE_NAME}-空間方案-3D.png`; a.href = renderer.domElement.toDataURL('image/png'); a.click(); }
 
 function relang(){ syncWalkTexts(); if (inited) buildLabels(); }
 
@@ -2353,6 +2471,7 @@ window.View3D = {enter, exit, relang, sync:(force) => sync(!!force), shot, groun
 
   return () => {
     booted = false;
-    try { window.View3D?.exit?.(); } catch (e) {}
+    ac.abort();
+    try { Promise.resolve(window.View3D?.exit?.()).catch(() => {}); } catch (e) {}
   };
 }

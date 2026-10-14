@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react"
 import { STUDIO_SHELL_HTML } from "./layout/studioShellHtml"
 import { bootPlanStudio } from "./engine/planStudio"
+import { mountDials } from "./ui/dials"
+import { mountHotbar } from "./ui/hotbar"
 
 /**
  * Mounts the imperative 2D/3D plan studio into a DOM host.
@@ -14,7 +16,11 @@ export function PlanStudioHost() {
     if (!host) return
     host.innerHTML = STUDIO_SHELL_HTML
     const teardown = bootPlanStudio(host)
+    const unmountDials = mountDials(host)
+    const unmountHotbar = mountHotbar(host)
     return () => {
+      unmountHotbar()
+      unmountDials()
       teardown()
       host.innerHTML = ""
     }

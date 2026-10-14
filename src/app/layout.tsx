@@ -1,21 +1,19 @@
 import type { Metadata } from "next";
-import { Baloo_2, Geist_Mono, Huninn } from "next/font/google";
-import "@fontsource/zen-maru-gothic/400.css";
-import "@fontsource/zen-maru-gothic/500.css";
-import "@fontsource/zen-maru-gothic/700.css";
+import { Anton, Geist_Mono, Noto_Sans_TC } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
+import { SITE_DESCRIPTION, SITE_TITLE } from "@/lib/site";
 import "./globals.css";
 
-// jf open 粉圓：繁中圓潤可愛字體（不預載以免下載整套 CJK）
-const huninn = Huninn({
-  variable: "--font-rounded",
-  weight: "400",
+// 不預載以免下載整套 CJK；next/font 會依 unicode-range 分片載入
+const notoSansTc = Noto_Sans_TC({
+  variable: "--font-noto-sans-tc",
+  weight: ["400", "500", "700", "900"],
   preload: false,
 });
 
-// 標題與數字用的可愛圓體（拉丁字母）
-const baloo = Baloo_2({
-  variable: "--font-cute",
+const anton = Anton({
+  variable: "--font-gta",
+  weight: "400",
   subsets: ["latin"],
 });
 
@@ -25,9 +23,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "買房前資產規劃",
-  description:
-    "互動式買房前資產配置與頭期款時間線試算，可選用 Groq AI 診斷規劃。",
+  title: SITE_TITLE,
+  description: SITE_DESCRIPTION,
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -35,13 +32,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="zh-Hant"
       suppressHydrationWarning
-      className={`${huninn.variable} ${baloo.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${notoSansTc.variable} ${anton.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col font-sans">
         <ThemeProvider
           attribute="class"
-          defaultTheme="light"
-          forcedTheme="light"
+          defaultTheme="dark"
+          forcedTheme="dark"
           enableSystem={false}
           disableTransitionOnChange
         >

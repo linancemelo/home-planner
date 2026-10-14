@@ -9,12 +9,16 @@ import {
   WAN_TO_YUAN,
 } from "./defaults";
 import { formatWan, formatYearMonth, yuanToWan } from "./format";
+import { SITE_NAME } from "./site";
 import type {
   ExtraFeeItem,
   PlannerInput,
   PlannerInputWan,
   PlannerResult,
+  PresaleDueDates,
   PresaleStage,
+  PresaleStageId,
+  YearMonth,
   YearTimelinePoint,
 } from "./types";
 
@@ -72,11 +76,95 @@ export function toPlannerInput(input: PlannerInputWan): PlannerInput {
     startMonth: clampMonth(input.startMonth),
     isPresale: input.isPresale,
     initialSelfFundRatio: clamp(input.initialSelfFundRatio, 0, 1),
+    presaleDueDates: sanitizePresaleDueDates(input.presaleDueDates),
     notaryFee: Math.max(0, fees.notaryFeeWan) * WAN_TO_YUAN,
     agencyFee: Math.max(0, fees.agencyFeeWan) * WAN_TO_YUAN,
     decorationFee: fees.decorationFeeWan * WAN_TO_YUAN,
     otherFee: fees.otherFeeWan * WAN_TO_YUAN,
   };
+}
+
+function sanitizePresaleDueDates(
+  dates: PresaleDueDates | undefined
+): PresaleDueDates {
+  const result: PresaleDueDates = {};
+  if (!dates) return result;
+  for (const def of PRESALE_STAGE_DEFS) {
+    const date = dates[def.id];
+    if (
+      date &&
+      Number.isFinite(date.year) &&
+      Number.isFinite(date.month)
+    ) {
+      result[def.id] = {
+        year: Math.trunc(date.year),
+        month: clampMonth(date.month),
+      };
+    }
+  }
+  return result;
+}
+
+export function monthsBetween(from: YearMonth, to: YearMonth): number {
+  return to.year * 12 + to.month - (from.year * 12 + from.month);
+}
+
+/**
+ * 各期距開始月的月數。自訂日期的期別直接採用；其餘期別夾在兩個自訂期別之間時，
+ * 依 2 年工期的預設間距等比內插，之後沒有自訂期別則沿用預設間距往後推。
+ */
+export function resolvePresaleOffsets(
+  start: YearMonth,
+  dueDates: PresaleDueDates
+): { id: PresaleStageId; offsetMonths: number; isCustomDate: boolean }[] {
+  const custom = PRESALE_STAGE_DEFS.map((def) => {
+    const date = dueDates[def.id];
+    return date ? monthsBetween(start, date) : null;
+  });
+
+  return PRESALE_STAGE_DEFS.map((def, index) => {
+    const own = custom[index];
+    if (own !== null) {
+      return { id: def.id, offsetMonths: own, isCustomDate: true };
+    }
+
+    let prevIndex = -1;
+    for (let i = index - 1; i >= 0; i--) {
+      if (custom[i] !== null) {
+        prevIndex = i;
+        break;
+      }
+    }
+    let nextIndex = -1;
+    for (let i = index + 1; i < PRESALE_STAGE_DEFS.length; i++) {
+      if (custom[i] !== null) {
+        nextIndex = i;
+        break;
+      }
+    }
+
+    const prevDefault =
+      prevIndex === -1 ? 0 : PRESALE_STAGE_DEFS[prevIndex].offsetMonths;
+    const prevOffset = prevIndex === -1 ? 0 : custom[prevIndex]!;
+
+    if (nextIndex === -1) {
+      return {
+        id: def.id,
+        offsetMonths: prevOffset + (def.offsetMonths - prevDefault),
+        isCustomDate: false,
+      };
+    }
+
+    const nextDefault = PRESALE_STAGE_DEFS[nextIndex].offsetMonths;
+    const nextOffset = custom[nextIndex]!;
+    const span = nextDefault - prevDefault;
+    const ratio = span > 0 ? (def.offsetMonths - prevDefault) / span : 0;
+    return {
+      id: def.id,
+      offsetMonths: Math.round(prevOffset + (nextOffset - prevOffset) * ratio),
+      isCustomDate: false,
+    };
+  });
 }
 
 /** 寬限期不得吃掉整段貸款年限，且有固定上限 */
@@ -273,7 +361,12 @@ function buildPresaleStages(input: PlannerInput, houseCash: number): PresaleStag
     handoverExtras.push({ id: "decoration", label: "裝潢費", amount: input.decorationFee });
   }
 
-  return PRESALE_STAGE_DEFS.map((def) => {
+  const schedule = resolvePresaleOffsets(
+    { year: input.startYear, month: input.startMonth },
+    input.presaleDueDates
+  );
+
+  return PRESALE_STAGE_DEFS.map((def, defIndex) => {
     const housePart = houseCash * (def.weight / totalWeight);
     const extras =
       def.id === "contract"
@@ -292,7 +385,8 @@ function buildPresaleStages(input: PlannerInput, houseCash: number): PresaleStag
       houseCash: housePart,
       extraFees: extras,
       totalCash: housePart + extraSum,
-      offsetMonths: def.offsetMonths,
+      offsetMonths: schedule[defIndex].offsetMonths,
+      isCustomDate: schedule[defIndex].isCustomDate,
       cumulativeRequired: 0,
       fundedNow: 0,
       remainingNow: 0,
@@ -511,7 +605,7 @@ export function buildSummaryText(
   const fees = resolveFeesWan(input);
   const autoTag = (isAuto: boolean) => (isAuto ? "（自動試算）" : "");
   const lines = [
-    "【買房前資產規劃摘要】",
+    `【${SITE_NAME}・資產規劃摘要】`,
     `房屋總價：${formatWan(input.housePriceWan)} 萬`,
     input.isPresale
       ? `類型：預售屋（初期自備比例 ${selfPct}%）`
@@ -555,7 +649,9 @@ export function buildSummaryText(
     lines.push("【預售分期現金】");
     for (const stage of result.presaleStages) {
       lines.push(
-        `${stage.title}：需 ${formatWan(yuanToWan(stage.totalCash))} 萬，目前已備 ${formatWan(
+        `${stage.title}（${formatYearMonth(stage.dueYear, stage.dueMonth)}${
+          stage.isCustomDate ? "，自訂" : ""
+        }）：需 ${formatWan(yuanToWan(stage.totalCash))} 萬，目前已備 ${formatWan(
           yuanToWan(stage.fundedNow)
         )} 萬${
           stage.reachedNow

@@ -105,7 +105,7 @@ export function AiDiagnosis({ input, result }: AiDiagnosisProps) {
 
       {diagnosis ? (
         <Collapsible open={open} onOpenChange={setOpen}>
-          <div className="rounded-xl border bg-card shadow-xs">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04]">
             <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
               <span className="flex items-center gap-2 text-sm font-medium">
                 <Sparkles className="size-4 text-primary" />
@@ -119,7 +119,7 @@ export function AiDiagnosis({ input, result }: AiDiagnosisProps) {
             </CollapsibleTrigger>
             <CollapsibleContent className="border-t">
               <div className="space-y-4 p-4 sm:p-5">
-                <div className="rounded-xl border border-[var(--studio-line)] bg-[var(--studio-accent-soft)] p-4">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-4">
                   <p className="flex items-center gap-2 text-xs font-semibold text-[var(--studio-accent)]">
                     <Sparkles className="size-3.5" />
                     整體評估
@@ -137,7 +137,7 @@ export function AiDiagnosis({ input, result }: AiDiagnosisProps) {
                     return (
                       <section
                         key={section.type}
-                        className={`rounded-xl border p-4 ${meta.card}`}
+                        className={`rounded-2xl border p-4 ${meta.card}`}
                       >
                         <h3
                           className={`flex items-center gap-2 text-sm font-semibold ${meta.heading}`}
@@ -192,23 +192,23 @@ const SECTION_STYLES: Record<
 > = {
   advantages: {
     icon: CheckCircle2,
-    card: "border-[var(--studio-line)] bg-[#f3ebe1]",
+    card: "border-white/10 bg-white/5 backdrop-blur-md",
     heading: "text-[var(--studio-teal)]",
     iconBox: "bg-[var(--studio-teal)]/15 text-[var(--studio-teal)]",
     dot: "bg-[var(--studio-teal)]",
   },
   risks: {
     icon: ShieldAlert,
-    card: "border-[var(--studio-line)] bg-[var(--studio-accent-soft)]",
-    heading: "text-[var(--studio-accent)]",
-    iconBox: "bg-[var(--studio-accent)]/15 text-[var(--studio-accent)]",
-    dot: "bg-[var(--studio-accent)]",
+    card: "border-[var(--gta-red)]/30 bg-[var(--gta-red)]/10",
+    heading: "text-[var(--gta-red)]",
+    iconBox: "bg-[var(--gta-red)]/15 text-[var(--gta-red)]",
+    dot: "bg-[var(--gta-red)]",
   },
   suggestions: {
     icon: Lightbulb,
-    card: "border-[var(--studio-line)] bg-white",
-    heading: "text-[var(--studio-ink)]",
-    iconBox: "bg-[var(--studio-line)] text-[var(--studio-ink)]",
-    dot: "bg-[var(--studio-muted)]",
+    card: "border-white/10 bg-white/[0.07] backdrop-blur-md",
+    heading: "text-[var(--gta-gold)]",
+    iconBox: "bg-[var(--gta-gold)]/15 text-[var(--gta-gold)]",
+    dot: "bg-[var(--gta-gold)]",
   },
 };

@@ -22,19 +22,19 @@ export function PlannerResults({ result }: PlannerResultsProps) {
 
   if (result.alreadyReached) {
     statusLabel = "已達標";
-    statusClass = "bg-teal text-primary-foreground";
+    statusClass = "bg-white text-[#1a1e27]";
   } else if (result.unreachable) {
     statusLabel = "無法估計";
-    statusClass = "bg-destructive/10 text-destructive";
+    statusClass = "bg-white/10 text-[#e4b7b1]";
   } else {
     statusLabel = "累積中";
-    statusClass = "border border-teal/40 bg-teal/10 text-teal-foreground";
+    statusClass = "border border-white/25 bg-white/10 text-white";
   }
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold tracking-tight">即時計算結果</h2>
+        <h2 className="gta-title text-lg">即時計算結果</h2>
         <span
           className={cn(
             "inline-flex h-6 items-center rounded-full px-2.5 text-xs font-medium",
@@ -45,7 +45,7 @@ export function PlannerResults({ result }: PlannerResultsProps) {
         </span>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 min-[480px]:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 min-[480px]:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="需準備現金合計"
           value={`${formatYuanAsWan(result.requiredDownPayment)} 萬`}
@@ -93,22 +93,22 @@ export function PlannerResults({ result }: PlannerResultsProps) {
         />
       </div>
 
-      <section className="overflow-hidden rounded-xl border border-indigo/25 bg-linear-to-br from-indigo/8 via-card to-teal/5">
-        <div className="space-y-3 border-b border-indigo/15 px-4 py-3">
+      <section className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04]">
+        <div className="space-y-3 border-b border-white/10 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="flex items-center gap-2 font-semibold">
-              <Landmark className="size-4 text-indigo" />
+            <h3 className="gta-title flex items-center gap-2 text-base">
+              <Landmark className="size-4 text-[var(--gta-gold)]" />
               房貸月付試算
             </h3>
             <div className="flex flex-wrap gap-1.5">
-              <span className="rounded-full bg-indigo/10 px-2.5 py-1 text-xs whitespace-nowrap text-indigo-foreground">
+              <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs whitespace-nowrap text-white">
                 年利率 {formatWan(result.annualInterestRate, 3)}%
               </span>
-              <span className="rounded-full bg-indigo/10 px-2.5 py-1 text-xs whitespace-nowrap text-indigo-foreground">
+              <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs whitespace-nowrap text-white">
                 {result.loanTermYears} 年
               </span>
               {result.gracePeriodYears > 0 ? (
-                <span className="rounded-full bg-indigo/10 px-2.5 py-1 text-xs whitespace-nowrap text-indigo-foreground">
+                <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs whitespace-nowrap text-white">
                   寬限 {result.gracePeriodYears} 年
                 </span>
               ) : null}
@@ -197,7 +197,7 @@ export function PlannerResults({ result }: PlannerResultsProps) {
         </div>
       ) : null}
 
-      <div className="space-y-3 rounded-xl border border-teal/20 bg-teal/5 p-4">
+      <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
         <div className="mb-1 flex w-full items-center justify-between gap-2">
           <span className="text-sm font-medium">資金覆蓋率</span>
           <span className="text-sm tabular-nums text-teal">
@@ -213,7 +213,7 @@ export function PlannerResults({ result }: PlannerResultsProps) {
           aria-label="資金覆蓋率"
         >
           <div
-            className="h-full rounded-full bg-linear-to-r from-teal to-indigo transition-[width]"
+            className="h-full rounded-full bg-white transition-[width]"
             style={{ width: `${coverageDisplay}%` }}
           />
         </div>
@@ -246,8 +246,8 @@ function LoanStat({
       </div>
       <p
         className={cn(
-          "mt-1 text-base font-semibold tabular-nums",
-          emphasize && "text-xl text-indigo sm:text-2xl"
+          "gta-num mt-1 whitespace-nowrap text-xl",
+          emphasize && "text-2xl text-[var(--gta-gold)]"
         )}
       >
         {value}
@@ -275,7 +275,7 @@ function StatCard({
   return (
     <div
       className={cn(
-        "rounded-xl border bg-card p-4 shadow-xs",
+        "rounded-2xl border border-white/10 bg-white/[0.04] p-4",
         tone === "teal" && "border-teal/25",
         tone === "amber" && "border-amber/30",
         emphasize && "border-destructive/40"
@@ -284,7 +284,7 @@ function StatCard({
       <p className="text-xs text-muted-foreground">{label}</p>
       <p
         className={cn(
-          "mt-1 text-xl font-semibold tracking-tight tabular-nums sm:text-2xl",
+          "gta-num mt-1 whitespace-nowrap text-2xl",
           emphasize && "text-destructive",
           tone === "teal" && !emphasize && "text-teal",
           tone === "amber" && !emphasize && "text-amber-foreground"
@@ -309,9 +309,9 @@ function MiniStat({
   hint?: string;
 }) {
   return (
-    <div className="rounded-xl border bg-muted/30 px-4 py-3">
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-0.5 text-lg font-semibold tabular-nums">{value}</p>
+      <p className="gta-num mt-0.5 text-xl">{value}</p>
       {hint ? (
         <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>
       ) : null}

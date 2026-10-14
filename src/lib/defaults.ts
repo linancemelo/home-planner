@@ -1,4 +1,4 @@
-import type { PlannerInputWan } from "./types";
+import type { PlannerInputWan, PresaleStageId } from "./types";
 
 export const DEFAULT_PLANNER_INPUT: PlannerInputWan = {
   housePriceWan: 1500,
@@ -12,6 +12,7 @@ export const DEFAULT_PLANNER_INPUT: PlannerInputWan = {
   startMonth: 1,
   isPresale: false,
   initialSelfFundRatio: 0.15,
+  presaleDueDates: {},
   notaryFeeWan: null,
   agencyFeeWan: null,
   decorationFeeWan: 0,
@@ -34,7 +35,13 @@ export const NOTARY_FEE_RATE = 0.001;
 export const NOTARY_FEE_MIN_WAN = 1.2;
 export const NOTARY_FEE_MAX_WAN = 3;
 
-/** 預售屋自備款分期權重（會依初期自備比例縮放） */
+/** 未自訂日期時，從簽約到交屋的預設工期（月） */
+export const PRESALE_DEFAULT_BUILD_MONTHS = 24;
+
+/**
+ * 預售屋自備款分期權重（會依初期自備比例縮放）。
+ * offsetMonths 為未自訂日期時距開始月的月數，以 2 年工期切分。
+ */
 export const PRESALE_STAGE_DEFS = [
   {
     id: "contract",
@@ -48,27 +55,33 @@ export const PRESALE_STAGE_DEFS = [
     title: "開工款",
     hint: "動土／開工通知",
     weight: 20,
-    offsetMonths: 6,
+    offsetMonths: 3,
   },
   {
     id: "structure",
     title: "結構體完成",
     hint: "工程期款",
     weight: 20,
-    offsetMonths: 18,
+    offsetMonths: 12,
   },
   {
     id: "exterior",
     title: "外牆／裝修期",
     hint: "工程期款",
     weight: 14,
-    offsetMonths: 30,
+    offsetMonths: 18,
   },
   {
     id: "handover",
     title: "交屋自備尾款",
     hint: "交屋前繳清自備",
     weight: 13,
-    offsetMonths: 36,
+    offsetMonths: PRESALE_DEFAULT_BUILD_MONTHS,
   },
-] as const;
+] as const satisfies readonly {
+  id: PresaleStageId;
+  title: string;
+  hint: string;
+  weight: number;
+  offsetMonths: number;
+}[];

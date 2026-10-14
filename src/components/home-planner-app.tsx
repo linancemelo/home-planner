@@ -42,10 +42,10 @@ export function HomePlannerApp() {
   }
 
   return (
-    <main className="w-full px-4 py-5 sm:px-6 sm:py-7 lg:px-8 xl:px-10">
-      <div className="mb-6 flex flex-col gap-4 sm:mb-8 md:flex-row md:items-end md:justify-between">
+    <main className="mx-5 w-auto px-4 pt-5 pb-8 sm:px-5 lg:px-6">
+      <div className="mb-6 flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
         <div className="min-w-0 max-w-4xl space-y-2">
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
+          <h1 className="gta-title text-2xl sm:text-3xl lg:text-4xl">
             彈性規劃你的購屋現金流
           </h1>
           <p className="text-sm text-muted-foreground sm:text-base lg:text-lg">
@@ -73,8 +73,8 @@ export function HomePlannerApp() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 items-start gap-5 md:grid-cols-[minmax(17rem,22rem)_minmax(0,1fr)] md:gap-6 xl:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(22rem,30rem)_minmax(0,1fr)]">
-        <Card className="h-fit border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none md:sticky md:top-[4.75rem]">
+      <div className="grid grid-cols-1 items-start gap-6 md:grid-cols-[minmax(17rem,22rem)_minmax(0,1fr)] xl:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)] 2xl:grid-cols-[minmax(22rem,30rem)_minmax(0,1fr)]">
+        <Card className="h-fit shadow-none md:sticky md:top-[5.5rem]">
           <CardHeader className="px-4 sm:px-6">
             <CardTitle className="text-lg sm:text-xl">規劃條件</CardTitle>
             <CardDescription className="text-sm sm:text-base">
@@ -86,28 +86,32 @@ export function HomePlannerApp() {
           </CardContent>
         </Card>
 
-        <div className="min-w-0 space-y-5 sm:space-y-6">
-          <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
+        <div className="min-w-0 space-y-6">
+          <Card className="shadow-none">
             <CardContent className="px-4 pt-5 sm:px-6 sm:pt-6">
               <PlannerResults result={result} />
             </CardContent>
           </Card>
 
           {input.isPresale ? (
-            <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
+            <Card className="shadow-none">
               <CardContent className="px-4 pt-5 sm:px-6 sm:pt-6">
-                <PresaleStages input={input} result={result} />
+                <PresaleStages
+                  input={input}
+                  result={result}
+                  onChange={setInput}
+                />
               </CardContent>
             </Card>
           ) : null}
 
-          <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
+          <Card className="shadow-none">
             <CardContent className="px-4 pt-5 sm:px-6 sm:pt-6">
               <TimelineView result={result} />
             </CardContent>
           </Card>
 
-          <Card className="border-[var(--studio-line)] bg-[var(--studio-panel)] shadow-none">
+          <Card className="shadow-none">
             <CardContent className="px-4 sm:px-6">
               <AiDiagnosis
                 key={JSON.stringify(input)}
@@ -121,7 +125,7 @@ export function HomePlannerApp() {
 
       <Separator className="my-8 bg-[var(--studio-line)] sm:my-10" />
       <p className="px-2 pb-4 text-center text-sm text-muted-foreground">
-        本工具僅供個人財務規劃參考，預售期款時程為示意，不構成投資、貸款或購屋建議。
+        本工具僅供個人財務規劃參考，預售期款日期未自訂時為推估，不構成投資、貸款或購屋建議。
       </p>
     </main>
   );

@@ -1,3 +1,17 @@
+export type PresaleStageId =
+  | "contract"
+  | "start"
+  | "structure"
+  | "exterior"
+  | "handover";
+
+export interface YearMonth {
+  year: number;
+  month: number;
+}
+
+export type PresaleDueDates = Partial<Record<PresaleStageId, YearMonth>>;
+
 /** 規劃輸入（UI 以「萬元」為單位，計算內部轉為「元」） */
 export interface PlannerInputWan {
   housePriceWan: number;
@@ -14,6 +28,8 @@ export interface PlannerInputWan {
   startMonth: number;
   isPresale: boolean;
   initialSelfFundRatio: number;
+  /** 預售各期自訂到期年月；沒填的期別依 2 年工期自動推估 */
+  presaleDueDates: PresaleDueDates;
   /** 代書費（萬元）；null 代表依房屋總價自動試算 */
   notaryFeeWan: number | null;
   /** 仲介費（萬元）；null 代表依房屋總價自動試算 */
@@ -36,6 +52,7 @@ export interface PlannerInput {
   startMonth: number;
   isPresale: boolean;
   initialSelfFundRatio: number;
+  presaleDueDates: PresaleDueDates;
   notaryFee: number;
   agencyFee: number;
   decorationFee: number;
@@ -57,7 +74,7 @@ export interface ExtraFeeItem {
 }
 
 export interface PresaleStage {
-  id: string;
+  id: PresaleStageId;
   title: string;
   hint: string;
   /** 佔總價比例（僅房屋自備部分） */
@@ -68,8 +85,10 @@ export interface PresaleStage {
   extraFees: ExtraFeeItem[];
   /** 本階段需現金合計（元） */
   totalCash: number;
-  /** 從開始月起的建議間隔月數（示意） */
+  /** 從開始月起到本期到期的月數；自訂日期早於開始月時為負值 */
   offsetMonths: number;
+  /** 到期日是否為使用者自訂 */
+  isCustomDate: boolean;
   /** 截至本階段需累積的現金（元） */
   cumulativeRequired: number;
   /** 以目前自備款依序分配到本階段的金額（元） */
@@ -86,7 +105,7 @@ export interface PresaleStage {
   fundedAtDue: number;
   /** 到期時是否預估夠付截至本階段的累積款 */
   reachedAtDue: boolean;
-  /** 期款到期年月（示意） */
+  /** 期款到期年月 */
   dueYear: number;
   dueMonth: number;
   /** 存滿累積款所需月數；0 代表現在就夠、null 代表沒有儲蓄無法估算 */
