@@ -1,0 +1,23 @@
+1:"$Sreact.fragment"
+2:I[63141,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js","/home-planner/_next/static/chunks/2umw0uune2zi1.js"],"AppShell"]
+3:I[97367,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js"],"OutletBoundary"]
+4:"$Sreact.suspense"
+8:I[97367,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js"],"ViewportBoundary"]
+9:I[97367,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js"],"MetadataBoundary"]
+a:I[27201,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js"],"IconMark"]
+c:I[27423,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js"],"ThemeProvider"]
+d:I[39756,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js"],"default"]
+e:I[37457,["/home-planner/_next/static/chunks/3t6_v_agmpav2.js"],"default"]
+:HL["/home-planner/_next/static/chunks/15li9gl4ozq9e.css","style"]
+:HL["/home-planner/_next/static/chunks/1pmku-_3firj1.css","style"]
+:HL["/home-planner/_next/static/chunks/40m862_im-q6u.css","style"]
+7:X
+0:{"buildId":"_VrNe25CErqoFKDxCrEBC","data":[{"rsc":["$","$1","c",{"children":[["$","$L2",null,{}],[["$","link","0",{"rel":"stylesheet","href":"/home-planner/_next/static/chunks/15li9gl4ozq9e.css","precedence":"next"}],["$","script","script-0",{"src":"/home-planner/_next/static/chunks/2umw0uune2zi1.js","async":true}]],["$","$L3",null,{"children":["$","$4",null,{"name":"Next.MetadataOutlet","children":"$@5"}]}]]}],"isPartial":"$@6","staleTime":"$7","varyParams":null},{"rsc":["$","$1","h",{"children":[null,["$","$L8",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","div",null,{"hidden":true,"children":["$","$L9",null,{"children":["$","$4",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"暖居｜買房資金與空間規劃"}],["$","meta","1",{"name":"description","content":"試算頭期款、房貸月付與預售分期，再用 2D／3D 平面工作室規劃新家的空間配置。"}],["$","link","2",{"rel":"icon","href":"/home-planner/favicon.ico?favicon.2vob68tjqpejf.ico","sizes":"256x256","type":"image/x-icon"}],["$","$La","3",{}]]}]}]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"isPartial":"$@b","staleTime":"$7","varyParams":null},{"rsc":["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/home-planner/_next/static/chunks/1pmku-_3firj1.css","precedence":"next"}],["$","link","1",{"rel":"stylesheet","href":"/home-planner/_next/static/chunks/40m862_im-q6u.css","precedence":"next"}],["$","script","script-0",{"src":"/home-planner/_next/static/chunks/3t6_v_agmpav2.js","async":true}]],["$","html",null,{"lang":"zh-Hant","suppressHydrationWarning":true,"className":"noto_sans_tc_5731ad85-module__Gk6kua__variable anton_6bed6e88-module__38n0Aq__variable geist_mono_8d43a2aa-module__8Li5zG__variable h-full antialiased","children":["$","body",null,{"className":"flex min-h-full flex-col font-sans","children":["$","$Lc",null,{"attribute":"class","defaultTheme":"dark","forcedTheme":"dark","enableSystem":false,"disableTransitionOnChange":true,"children":["$","$Ld",null,{"parallelRouterKey":"children","template":["$","$Le",null,{}],"notFound":[[["$","title",null,{"children":"404: This page could not be found."}],["$","div",null,{"style":{"fontFamily":"system-ui,\"Segoe UI\",Roboto,Helvetica,Arial,sans-serif,\"Apple Color Emoji\",\"Segoe UI Emoji\"","height":"100vh","textAlign":"center","display":"flex","flexDirection":"column","alignItems":"center","justifyContent":"center"},"children":["$","div",null,{"children":[["$","style",null,{"dangerouslySetInnerHTML":{"__html":"body{color:#000;background:#fff;margin:0}.next-error-h1{border-right:1px solid rgba(0,0,0,.3)}@media (prefers-color-scheme:dark){body{color:#fff;background:#000}.next-error-h1{border-right:1px solid rgba(255,255,255,.3)}}"}}],["$","h1",null,{"className":"next-error-h1","style":{"display":"inline-block","margin":"0 20px 0 0","padding":"0 23px 0 0","fontSize":24,"fontWeight":500,"verticalAlign":"top","lineHeight":"49px"},"children":404}],["$","div",null,{"style":{"display":"inline-block"},"children":["$","h2",null,{"style":{"fontSize":14,"fontWeight":400,"lineHeight":"49px","margin":0},"children":"This page could not be found."}]}]]}]}]],[]]}]}]}]}]]}],"isPartial":"$@f","staleTime":"$7","varyParams":null}],"isUpgradeableISRFallback":false,"a":"$@10","rootVaryParams":null,"needsRuntimeRequest":"$@11"}
+5:null
+7:300
+11:true
+7:C
+10:0
+b:"$undefined"
+f:"$undefined"
+6:"$undefined"
