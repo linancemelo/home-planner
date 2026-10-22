@@ -514,6 +514,20 @@ function renderAll(){
 
 function updateHeader(){
   const tot = planRooms.filter(r => r.counted !== false).reduce((a,r) => a + area(r.poly), 0);
+  if (blueprint.source === 'generated'){   // 系統配置：標題用實際房廳衛，面積口徑與預覽一致（室內不含陽台）
+    const isBal = r => /balcony/.test(r.id);
+    const net = planRooms.filter(r => r.counted !== false && !isBal(r)).reduce((a,r) => a + area(r.poly), 0);
+    const bal = planRooms.filter(isBal).reduce((a,r) => a + area(r.poly), 0);
+    const t = document.querySelector('.hps-brand b'); if (t) t.textContent = `${blueprint.name} · 室內裝修設計`;
+    $('#subtitle').textContent = `室內約 ${fmtArea(net)}（不含陽台）＋陽台 ${fmtArea(bal)} · 尺寸單位 mm · 系統配置`;
+    $('#undo').disabled = !undoStack.length; $('#redo').disabled = !redoStack.length;
+    $('#undo').style.opacity = undoStack.length ? 1 : .4; $('#redo').style.opacity = redoStack.length ? 1 : .4;
+    return;
+  }
+  { // 非系統配置：還原標題（避免沿用上一個系統配置戶型的標題）；範例戶型維持原名，辨識戶型用通用名稱
+    const t = document.querySelector('.hps-brand b');
+    if (t) t.textContent = blueprint.source === 'default' ? tr('三室兩廳兩衛 · 室內裝修設計', '3BR 2LR 2BA · Home Planner') : tr('自訂戶型 · 室內裝修設計', 'Custom plan · Home Planner');
+  }
   const scaleNote = blueprint.source === 'default'
     ? tr('原图比例 1:60', 'Original scale 1:60')
     : tr('由平面圖辨識（NTS）', 'From floor-plan detect (NTS)');

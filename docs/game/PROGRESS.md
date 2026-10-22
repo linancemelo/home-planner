@@ -1,0 +1,92 @@
+# 進度（中斷可續）
+
+工作樹：/workspace/home-planner-game-m7（分支 game-3d-release）；舊 worktree game-3d、m2、m4、m6 都保留。主工作樹 /workspace/home-planner-deploy/home-planner 未動。
+驗證：`npm run build && npm run test:detect && npm run test:ai && npm run test:layout`
+截圖：/tmp 已在重置時清空；戶型圖用 /workspace/game-tools/render.ts＋png.sh（repo 外的除錯工具）。
+
+- [x] 盤點 repo、建 worktree、npm ci、基準 build/test 綠（2026-10-21 22:59 台北時間）
+- [x] ARCH.md / DECISIONS.md
+- [x] **M1**（約 2026-10-21 23:05 台北時間完成；先前寫的「23:25」是錯的未來時間，已更正）：開始畫面、系統配置表單、戶型產生器、驗證器、2D 預覽、在編輯器開啟、回開始畫面
+  - 新檔：src/game/{GameApp.tsx,game.css,layout/{types,rng,generateLayout,validateLayout}.ts,ui/{ConfigForm,PlanPreview}.tsx}、scripts/test-layout.ts
+  - 改檔：src/App.tsx（改掛 GameApp）、src/plan/types/blueprint.ts（source 加 "generated"）、package.json（加 test:layout）
+  - 結果：build 綠；test:detect、test:ai 綠；test:layout 4,800 組（1–4 房×1–3 衛×1–2 廳×開放/獨立×5 坪數×20 seed）全過＋決定性＋5 個反例都抓到；headless 截圖無 console error；上傳精靈「從平面圖建立」在編輯器內仍可開啟
+  - 已知：4 房 3 衛戶型偏長；編輯器標題列寫死「三室兩廳兩衛」（studio 既有問題，未改）
+- [!] 2026-10-21 約 23:09–23:13:36 台北時間：box 重開機＋/workspace 快照還原（非我執行的指令造成；見 DECISIONS 19）。M1 留存；M2/M3 程式碼與 /tmp 遺失。
+- [x] 2026-10-21 23:21:41 台北時間：M1 基準存成 patch＋tar（/workspace/game-baselines/m1/，含 SHA256SUMS；DECISIONS 20）
+- [x] **M1 QA 修正**（2026-10-21 約 23:30 台北時間）：預算 ±12%＋明確錯誤（BudgetError）、各房型面積／長寬比上限、編輯器標題「N房N廳N衛」與副標（只改 generated）、每房有門、開口不重疊、獨立廚房有窗、換一個必不同、2 廳分區標示、坪數口徑一致（室內不含陽台）、NaN 拒絕
+- [x] **範本戶型庫**（2026-10-21 23:45 台北時間）：scripts/build-templates.py → src/game/layout/templates.json（5 個範本，8.4 KB，只有座標）；templateLayout.ts 實例化（鏡像／旋轉 8 種、等比縮放到預算、牆線合併、開口嵌牆、陽台欄杆、外牆補齊、通未標示平台的門改窗、1 房時最小臥室改書房）；templateSpans.json 預算可行段；驗證器改洪水填充可達性＋大門關閉不可入＋曬衣陽台＋門寬
+  - test:layout：3,840 組全過；每個整數坪都做得出來；範本反例 3 個、原反例 10 個都抓到；預算段與即時計算一致
+  - 覆蓋：1–2 房 × 1–2 衛 × 開放廚房 → 範本；其餘（3–4 房、3 衛、獨立廚房）→ 程序化 fallback（標註資料沒有這些組合）
+  - 截圖：docs/game/shots/m1b-template-gallery.png、m1b-config-template.png
+  - 2026-10-21 23:50 台北時間最終驗證：build、test:detect、test:ai、test:layout 全綠；未 commit／push；主工作樹 59 個未提交變更未動
+- [x] **M1b 送 QA 後的工作**：改在新 worktree /workspace/home-planner-game-m2（分支 game-3d-m2），QA 的 worktree 沒動（DECISIONS 36）
+- [x] **範本擴充**（2026-10-21 23:51 存 M1b 基準、23:55 房型對照、2026-10-22 00:02 templates.json，依檔案時間；台北時間）：用 YOLO 真實平面人工標房型，18 張裡轉成功 6 張、跳過 12 張；在新規則下有效的只有 y02（3房2衛）。4 房、3 衛、獨立廚房仍走程序化（DECISIONS 35）
+- [x] **QA M1b 修正**（planStudio 00:05、templateSpans 00:08，依檔案時間；台北時間）：
+  - 懸空牆裁掉，驗證器也加了規則
+  - 編輯器標題在非系統配置的來源時會重設
+  - 落地窗至少 1.8 m（會自動加寬），臥室短邊至少 2.6 m，L 形客廳用整體形狀檢查長寬比，共用曬衣陽台有最小尺寸
+  - 陽台不算進側欄面積
+  - 細節見 DECISIONS 37–39
+- [x] **M2 自動家具＋替換**（2026-10-22 00:37 台北時間，各項測試全綠）：
+  - src/game/furnish/{variants,autoFurnish,validateFurniture}.ts；系統配置預覽會畫家具，點家具可以換款式（放不下時保留原款式並提示），也有「還原預設家具」
+  - 在編輯器開啟時，家具一起寫進 scheme；遊戲另存 slotKey 和款式
+  - test:furnish：快速版 264 組；ALL=1 全量 3,032 組全過；換款式測 23 次，16 次換成、7 次放不下時正確保留原款式
+  - 2 房 15–16 坪這類小客廳（小於 25 m²）可以不放沙發，UI 會提示（DECISIONS 42）
+- [x] **M3 3D 走動**（2026-10-22 00:37 台北時間）：
+  - src/game/scene/{walk.ts,buildScene.ts,PlayScreen.tsx}；系統配置頁的「進去走走 →」直接進 3D，角色選擇留到 M5
+  - 從大門外出生；門關著進不去，開門後可以進客廳；拖曳轉視角、WASD＋Shift、手機搖桿都能用；大門、房門、落地窗、窗、冰箱都能開關
+  - test:walk 264 組全過；headless Chrome 實測沒有 console error
+  - 截圖：docs/game/shots/m2-config-furniture-swap.png、m3-entry-door-open.png、m3-living-walk.png、m3-fridge-open.png
+- [x] 2026-10-22 00:37 台北時間最終驗證：build、test:detect、test:ai、test:layout（3,840 組）、test:furnish、test:walk 全綠；未 commit／push；主工作樹 59 個未提交變更未動；QA worktree 的 diff sha 還是 186bf7b3
+- [ ] M4 互動細節（開關已在 M3 做好；之後可再加：門把動畫、窗戶開啟方式、音效）
+- [x] **y08／y10／y13 走道標註手修**（m4 worktree 00:38 從 m2 複製；範本 00:49 重新產生；家具閘門與 spans 在 01:07，台北時間）：
+  - y13 提供 3–4 房，y10 提供 2–3 房
+  - y08 因為是半套衛浴加走道式廚房，被家具閘門排除，獨立廚房仍走程序化
+  - 細節見 DECISIONS 45–48
+- [x] **M5 角色**（2026-10-22 01:37 台北時間，全套測試綠）：
+  - 選角色畫面有 6 個 Q 版角色，全用幾何原件組成
+  - 身高體重換算成眼高和身寬
+  - 預設第一人稱，按鈕或 V 鍵切換第三人稱
+  - 流程：開始 → 格局 → 選角色 → 身高體重 → 漫遊；編輯器的「進去走走」也走同一流程
+  - e2e（headless Chrome，沒有 console error）：
+    - 6 張縮圖都有畫出來
+    - 身高 250 會被擋下
+    - 120 cm 時眼高 1.12 m
+    - V 切換第三人稱有效
+    - y13 4 房：走到門前按 E 開大門，可以走進客餐廳
+    - 編輯器路徑可以進到客廳
+  - 修正：小波的鮑伯頭原本遮住整張臉，是圓柱缺口的角度錯了
+  - 截圖：docs/game/shots/m5-character-select.png、m5-third-person.png
+  - 細節見 DECISIONS 49
+- [x] 2026-10-22 01:37 台北時間最終驗證：
+  - build、test:detect、test:ai、test:layout（3,840 組）、test:furnish（264 組）、test:walk（264 組）全綠
+  - 未 commit／push
+  - 主工作樹 59 個未提交變更未動；QA worktree 的 diff sha 還是 186bf7b3；m2 審查副本沒有動
+  - test:layout 因為家具閘門變慢，約 8 分鐘
+- [x] **M6 修正批次**（QA M2/M3 與 M5 審查；worktree home-planner-game-m6 於 01:57 從 m4 複製；完成於 2026-10-22 02:57 台北時間）：
+  - 遊戲碰撞模型的可達性：QA 規格掃描 948 組全部可生成、0 失敗（原本 233；先前寫 868 是 scan.ts 跳過 1房3衛 80 組，QA 2026-10-22 複核更正）
+  - 互動要看得到、要面向它；自動後退不穿牆
+  - y13 走廊是室內空間；門名取門通往的那間
+  - 手機有可見搖桿，說明文字依裝置切換；手機選角色頁不爆版
+  - 替換只動那一件；衣櫃會退階擺；動畫乘 dt；冰箱門有碰撞
+  - 正式版不含 __game；出生點在 E 範圍內；簡體名稱轉繁體
+  - 丸子造型重做；數字輸入只收一般寫法；新增 test:character
+  - 移除用不到的範本 y03、y08、y09
+  - 細節見 DECISIONS 50–60
+  - e2e（headless Chrome，沒有 console error）：
+    - 出生時就看得到「開門（大門）E」，按 E 再走就進到客廳
+    - y13 走廊的 HUD 顯示「走廊」，地板是木地板
+    - 站在屋外、隔牆面向冰箱，按 E 打不開
+    - 身高輸入 1e2、0170 會被擋下
+    - 390 px 手機：選角色是 2 欄，下一步按鈕在畫面內；漫遊頁有搖桿，說明文字是觸控用語
+  - 截圖：docs/game/shots/m6-character-select.png、m6-y13-hall.png、m6-mobile-character-select.png、m6-mobile-joystick.png
+- [x] 2026-10-22 02:57 台北時間最終驗證：
+  - build、test:detect、test:ai、test:layout（3,840 組，約 14 分鐘）、test:furnish（264 組；替換 29 次，23 次放得下）、test:walk（264 組）、test:character 全綠
+  - 未 commit／push
+- [x] M6 整合（QA：M1、M2、M3、M5 都通過）
+- [x] **M7 正式版準備**（2026-10-22，worktree /workspace/home-planner-game-m7，分支 game-3d-release）：拿掉 c 範本，並做了 M6 建議的小修（DECISIONS 61、62）。
+  - build 和 6 套測試全綠。
+  - 948 組掃描（含 1房3衛）：0 個產生失敗、0 個驗證錯誤、0 個走不到。
+  - dist 搜尋不到 c 範本資料，也沒有「internal use only」。
+- [ ] QA 在 commit SHA 的正式版 build（vite preview）上跑完整流程，通過後再部署。
+

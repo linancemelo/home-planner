@@ -42,7 +42,7 @@ export type LintelOpening = [OpeningRect, number]
 export type PlanBlueprint = {
   id: string
   name: string
-  source: "default" | "import"
+  source: "default" | "import" | "generated"
   walls: WallRect[]
   windowOpenings: OpeningRect[]
   swingDoors: SwingDoor[]
