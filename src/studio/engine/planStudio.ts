@@ -194,6 +194,7 @@ let view = {x0:0, y0:0, s:.06};
 const undoStack = [], redoStack = [];
 
 function save(){ try { localStorage.setItem(SCHEME_STORE_KEY, JSON.stringify(state)); } catch(e) {} }
+addEventListener('pagehide', () => { try { save(); saveBlueprint(); } catch (e) {} });
 const snap = () => JSON.stringify(state);
 function commit(before){ undoStack.push(before); if (undoStack.length > 150) undoStack.shift(); redoStack.length = 0; save(); }
 function mutate(fn){ const b = snap(); fn(); commit(b); renderAll(); }
@@ -2249,35 +2250,22 @@ function bindJoystick(){
   el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
 }
 function setMode(m){
+  // 漫遊改走遊戲同一條管線（#/walk）：不受飛鏡 anim 擋（2D／進場動畫時點「進去走走」也要進得去）。
+  // 舊內建漫遊用 entry.c 當外法向會卡牆，故改導向遊戲 PlayScreen。
+  if (m === 'walk'){
+    anim = null;
+    try { save(); saveBlueprint(); } catch (e) {}
+    location.hash = '#/walk';
+    return;
+  }
   if (anim) return;
   opt.mode = m; syncModeBtns();
-  if (m === 'walk'){
-    select(null);
-    if (opt.cut < H){ opt.cut = H; syncCutBtns(); sync(); }
-    orbit.enabled = false; fly = null;
-    {
-      const entry = swingDoors.find(d => d.entry) || swingDoors[0];
-      if (entry){
-        const [x0,y0,x1,y1] = entry.rect;
-        const mx = (x0+x1)/2, my = (y0+y1)/2;
-        const outside = entry.c ? [mx - entry.c[0]*1200, my - entry.c[1]*1200] : [mx - 1200, my];
-        const inside = entry.c ? [mx + entry.c[0]*1800, my + entry.c[1]*1800] : [mx + 1800, my];
-        camera.position.set(wx(outside[0]), 1.6, wz(outside[1])); camera.lookAt(wx(inside[0]), 1.5, wz(inside[1]));
-      } else {
-        camera.position.set(wx(BOUNDS.x + BOUNDS.w*0.2), 1.6, wz(BOUNDS.y + BOUNDS.h*0.8));
-        camera.lookAt(wx(OX), 1.5, wz(OY));
-      }
-    }
-    $('#walkOverlay').style.display = 'flex';
-    syncHint3d();
-  } else {
-    walkCtl.unlock(); stopTouchWalk(); orbit.enabled = true;
-    $('#walkOverlay').style.display = 'none'; $('#cross').style.display = 'none';
-    syncHint3d();
-    orbit.target.set(0, 0, 0); flyTo(isoWhole());
-  }
+  walkCtl.unlock(); stopTouchWalk(); orbit.enabled = true;
+  $('#walkOverlay').style.display = 'none'; $('#cross').style.display = 'none';
+  syncHint3d();
+  orbit.target.set(0, 0, 0); flyTo(isoWhole());
   showLabels(opt.labels && m === 'orbit');
-  archUp.traverse(o => { if (o.userData.walkOnly) o.visible = m === 'walk'; });
+  archUp.traverse(o => { if (o.userData.walkOnly) o.visible = false; });
 }
 function blocked(x, z, r = .22){
   for (const [x0, z0, x1, z1] of colliders) if (x > x0 - r && x < x1 + r && z > z0 - r && z < z1 + r) return true;

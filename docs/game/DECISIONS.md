@@ -214,3 +214,8 @@
     - 手機漫遊頁：直式畫面把 FOV 調大，讓水平視角約 75°（上限 100°）；HUD 和說明縮小，E 按鈕移到右下，不再壓到搖桿。
     - 可達性 +15 mm 邊距：試過了，但有 15/948 組程序化套房衛浴的馬桶和浴櫃會變成走不到，所以沒有採用，維持原本的半徑 200 mm。
 
+## D-28 · 編輯器漫遊統一走遊戲管線（M8）
+- **決定**：planStudio「漫遊」不再用內建 PointerLock；`save` 後 `location.hash='#/walk'`，與系統配置共用 PlayScreen／autoFurnish／碰撞。
+- **原因**：內建漫遊把 SwingDoor.`c`（關閉葉片方向）當外法向 → 出生點進牆卡住；且 assembleFurnishing 細網格 ≠ 遊戲盒子家具，視覺兩套。
+- **家具**：EditorWalk／`layoutFromBlueprint` 用 type→slot 對照；scheme 空則讀 GAME_FURNISH_KEY，再空則 `autoFurnish`（與系統配置同套）。
+- **鳥瞰 3D**：仍用詳細家具網格（編輯用途）；只有「進去走走／漫遊」統一遊戲風格。

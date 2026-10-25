@@ -2,8 +2,9 @@
 import { toTrad } from "./s2t.ts"
 import type { PlanBlueprint } from "../../plan/types/blueprint.ts"
 import type { SchemeFurniture } from "../../plan/state/schemeStore.ts"
-import type { GameFurniture } from "../furnish/autoFurnish.ts"
-import { normalizeConfig } from "./generateLayout.ts"
+import { autoFurnish, type GameFurniture } from "../furnish/autoFurnish.ts"
+import type { SlotId } from "../furnish/variants.ts"
+import { normalizeConfig, spawnNearEntry } from "./generateLayout.ts"
 import type { GeneratedLayout, RoomKind } from "./types.ts"
 import { pointInPoly } from "./validateLayout.ts"
 
@@ -17,6 +18,19 @@ export function kindFromName(n: string): RoomKind {
   if (/卧|臥|寢/.test(n)) return "bedroom"
   if (/走廊|走道|过道|過道|玄关|玄關/.test(n)) return "hall"
   return "living"
+}
+
+/** 編輯器家具 type → 遊戲槽位（冰箱／床等才能正確互動與碰撞）。 */
+const SLOT_OF: Record<string, SlotId> = {
+  bed: "bed", nightstand: "nightstand", wardrobe: "wardrobe", desk: "desk", chair: "diningchair",
+  bookshelf: "bookshelf", sofa: "sofa", cornersofa: "sofa", armchair: "sofa", coffeetable: "coffeetable",
+  sidetable: "coffeetable", tvstand: "tvstand", tv: "tv", table: "dining", roundtable: "dining",
+  shoecab: "shoecab", rug: "rug", fridge: "fridge", counter: "counter", stove: "stove", ksink: "ksink",
+  toilet: "toilet", vanity: "vanity", shower: "shower", bathtub: "shower", washer: "washer",
+}
+
+export function slotFromType(type: string): SlotId {
+  return SLOT_OF[type] ?? "desk"
 }
 
 export function layoutFromBlueprint(bp0: PlanBlueprint, furniture0: SchemeFurniture[]): { layout: GeneratedLayout; items: GameFurniture[] } | { error: string } {
@@ -39,12 +53,24 @@ export function layoutFromBlueprint(bp0: PlanBlueprint, furniture0: SchemeFurnit
   if (!spawn) return { error: "找不到通往室外的大門（請在編輯器把大門放在外牆上）" }
   const kinds: Record<string, RoomKind> = {}
   for (const r of bp.planRooms) kinds[r.id] = kindFromName(r.name)
-  const layout: GeneratedLayout = {
+  let layout: GeneratedLayout = {
     config: normalizeConfig({}), blueprint: bp, scheme: { furniture, rooms: {}, demolished: [], measures: [] }, kinds, spawn,
     zones: {}, openKitchenZone: null, livingAreas: [], corridorY: 0, entrySide: "S", areaPing: 0, balconyPing: 0,
     variant: { flip: false, ensuite: false, bathsSouth: false, movedBedrooms: 0, storage: false },
   }
+  layout = spawnNearEntry(layout)
   const roomOf = (f: SchemeFurniture) => bp.planRooms.find((r) => pointInPoly([f.cx, f.cy], r.poly as P[]))?.id ?? ""
-  const items = furniture.map((f) => ({ ...f, slot: "desk", slotKey: `editor:${f.id}`, variant: f.type, room: roomOf(f) }) as GameFurniture)
+  let items: GameFurniture[] = furniture.map((f) => {
+    const slot = slotFromType(f.type)
+    return { ...f, slot, slotKey: `editor:${f.id}`, variant: f.type, room: roomOf(f) } as GameFurniture
+  })
+  // 編輯器沒擺家具（上傳辨識／剛建格局）→ 用與系統配置同一套 autoFurnish
+  if (items.length === 0) {
+    try {
+      const auto = autoFurnish(layout)
+      items = auto.items
+      layout = { ...layout, scheme: { ...layout.scheme, furniture: auto.items.map(({ id, type, name, cx, cy, w, d, rot, color }) => ({ id, type, name, cx, cy, w, d, rot, color })) } }
+    } catch { /* 極端戶型擺不下就空屋走 */ }
+  }
   return { layout, items }
 }

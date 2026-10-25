@@ -90,3 +90,12 @@
   - dist 搜尋不到 c 範本資料，也沒有「internal use only」。
 - [ ] QA 在 commit SHA 的正式版 build（vite preview）上跑完整流程，通過後再部署。
 
+## M8 · 編輯器漫遊卡住＋家具兩套（已修，待 QA 正式版複審）
+- 根因：planStudio walk 誤用 `entry.c`；兩套 3D（assembleFurnishing vs buildScene）。
+- 修：`setMode('walk')`→`#/walk`；`fromBlueprint` slot 對照＋空屋 autoFurnish；浮層「進去走走」點漫遊鈕。
+- 驗證：default／gen→editor→walk spawn `blocked=false`；build OK；test:furnish 264/0；test:walk 264/0。
+
+## M8b · QA must-fix：2D「進去走走」無效（已修）
+- 根因：`setMode` 的 `if (anim) return` 擋 walk；浮層只 click 漫遊鈕且按鈕恆在 DOM → 無 fallback。
+- 修：`walk` 先於 anim（`anim=null` 後導 `#/walk`）；浮層 click 後若 hash 仍非 walk → `go("walk")`。
+- 驗證：build OK；邏輯 smoke；headless：2D／anim 中「進去走走」→ `#/walk`；3D「漫遊」→ `#/walk`。

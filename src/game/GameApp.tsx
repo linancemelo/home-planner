@@ -35,13 +35,21 @@ export function WalkFlow({ layout, items, onExit }: { layout: GeneratedLayout; i
   return <PlayScreen layout={layout} items={items} player={player} onBack={() => setStep("body")} />
 }
 
-/** 從編輯器（自己建的格局）進入漫遊。 */
+/** 從編輯器（自己建的格局）進入漫遊：同一套 PlayScreen／家具／碰撞；無家具時 autoFurnish。 */
 function EditorWalk({ onExit }: { onExit: () => void }) {
   const res = useMemo(() => {
     try {
       const bp = JSON.parse(localStorage.getItem(BLUEPRINT_STORAGE_KEY) || "null") ?? createDefaultBlueprint()
       const sch = JSON.parse(localStorage.getItem(SCHEME_STORAGE_KEY) || "null")
-      return layoutFromBlueprint(bp, sch?.furniture ?? [])
+      let furniture = sch?.furniture ?? []
+      // 系統配置寫入的遊戲家具（含 slot）；編輯器 scheme 被清空時仍可用
+      if (!furniture.length) {
+        try {
+          const gf = JSON.parse(localStorage.getItem(GAME_FURNISH_KEY) || "null")
+          if (Array.isArray(gf?.items) && gf.items.length) furniture = gf.items
+        } catch { /* ignore */ }
+      }
+      return layoutFromBlueprint(bp, furniture)
     } catch (e) { return { error: `讀不到編輯器的格局：${e}` } }
   }, [])
   if ("error" in res) return (
@@ -69,7 +77,12 @@ export function GameApp() {
     <>
       <AppShell />
       <button type="button" className="gm-back-float" onClick={() => go("start")}>← 回開始畫面</button>
-      <button type="button" className="gm-back-float gm-walk-float" onClick={() => go("walk")}>進去走走 →</button>
+      <button type="button" className="gm-back-float gm-walk-float" onClick={() => {
+        // 先點編輯器「漫遊」觸發 save；若 anim／2D 讓 setMode no-op，再強制 go("walk")
+        const b = document.querySelector('#modes3d [data-mode="walk"]') as HTMLButtonElement | null
+        b?.click()
+        if (!/#\/?walk\b/.test(location.hash)) go("walk")
+      }}>進去走走 →</button>
     </>
   )
   if (screen === "walk") return <EditorWalk onExit={() => go("studio")} />
