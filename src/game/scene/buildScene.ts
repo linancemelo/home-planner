@@ -2,15 +2,11 @@
 import * as THREE from "three"
 import type { GeneratedLayout, RoomKind } from "../layout/types.ts"
 import type { GameFurniture } from "../furnish/autoFurnish.ts"
+import { assembleFurnishing } from "../../scene3d/assembleFurnishing.ts"
 import { H, type Interactable, slidePanels } from "./walk.ts"
 
 const M = 1 / 1000
 const FLOOR: Record<RoomKind, number> = { living: 0xd9b48a, bedroom: 0xc9a27a, bath: 0xdfe6ea, kitchen: 0xe2d6c4, balcony: 0xb9b2a6, storage: 0xcdbfa8, study: 0xc9a27a, hall: 0xd6b591 }
-const HEIGHT: Record<string, number> = {
-  bed: 500, nightstand: 500, wardrobe: 2100, desk: 750, chair: 850, bookshelf: 1800, sofa: 800, cornersofa: 800, coffeetable: 420, sidetable: 450,
-  tvstand: 450, tv: 750, table: 750, roundtable: 750, shoecab: 1000, rug: 10, fridge: 1800, counter: 850, stove: 900, ksink: 850,
-  toilet: 750, vanity: 850, shower: 2000, bathtub: 550, washer: 850,
-}
 
 const mat = (c: number | string, o: Partial<THREE.MeshStandardMaterialParameters> = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, ...o })
 function box(x0: number, z0: number, x1: number, z1: number, y0: number, y1: number, m: THREE.Material) {
@@ -102,44 +98,33 @@ export function buildScene(g: GeneratedLayout, items: GameFurniture[]): SceneHan
     lerp(st, (v) => { pivot.rotation.y = a0 + da * v }, 0.05)
     dyn.set(`swing:${i}`, (open) => { st.tgt = open ? 1 : 0 })
   })
-  // 家具（簡單方塊；冰箱門可開）
+  // 家具：與編輯器鳥瞰同一套 assembleFurnishing 細網格（D-29：各模式視覺統一）
+  // 冰箱門片仍可開合（互動／碰撞走 walk.ts；門片蓋在細網格正面上作為開關回饋）
   for (const it of items) {
-    const h = HEIGHT[it.type] ?? 700, sw = it.rot % 180 === 0 ? it.w : it.d, sd = it.rot % 180 === 0 ? it.d : it.w
-    const x0 = it.cx - sw / 2, z0 = it.cy - sd / 2, x1 = it.cx + sw / 2, z1 = it.cy + sd / 2
-    const m = mat(it.color)
-    if (it.type === "tv") { scene.add(box(x0, z0, x1, z1, 480, 480 + h, mat(0x1d1d1f, { roughness: 0.3 }))); continue }
-    if (it.type === "bed") { scene.add(box(x0, z0, x1, z1, 0, 300, mat(0xb08a68)), box(x0 + 20, z0 + 20, x1 - 20, z1 - 20, 300, h, m)); continue }
-    if (it.type === "table" || it.type === "roundtable" || it.type === "desk" || it.type === "coffeetable") {
-      scene.add(box(x0, z0, x1, z1, h - 40, h, m))
-      for (const [px, pz] of [[x0 + 40, z0 + 40], [x1 - 40, z0 + 40], [x0 + 40, z1 - 40], [x1 - 40, z1 - 40]]) scene.add(box(px - 25, pz - 25, px + 25, pz + 25, 0, h - 40, m))
-      continue
-    }
-    if (it.type === "fridge") {
-      // 本體＋以一側為軸的門
-      const n = it.rot === 0 ? [0, 1] : it.rot === 90 ? [-1, 0] : it.rot === 180 ? [0, -1] : [1, 0]
-      const t: [number, number] = [-n[1], n[0]] // 沿寬度方向
-      const bodyD = it.d - 50
-      const bx = it.cx - n[0] * 25, bz = it.cy - n[1] * 25
-      const bsw = it.rot % 180 === 0 ? it.w : bodyD, bsd = it.rot % 180 === 0 ? bodyD : it.w
-      scene.add(box(bx - bsw / 2, bz - bsd / 2, bx + bsw / 2, bz + bsd / 2, 0, h, m))
-      const hx = it.cx + n[0] * (it.d / 2 - 25) - t[0] * (it.w / 2), hz = it.cy + n[1] * (it.d / 2 - 25) - t[1] * (it.w / 2)
-      const pivot = new THREE.Group()
-      pivot.position.set(hx * M, 0, hz * M)
-      const door = new THREE.Mesh(new THREE.BoxGeometry(it.w * M, (h - 20) * M, 0.05), mat(0xeef1f3, { metalness: 0.2, roughness: 0.4 }))
-      door.position.set((it.w / 2) * M, (h / 2) * M, 0)
-      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.5, 0.03), frameM)
-      handle.position.set(it.w * M - 0.06, 1.1, 0.04 * (1))
-      pivot.add(door, handle)
-      const a0 = angleOf(t), a1 = angleOf(n)
-      pivot.rotation.y = a0
-      scene.add(pivot)
-      const st = { cur: 0, tgt: 0 }
-      lerp(st, (v) => { pivot.rotation.y = a0 + (a1 - a0 + (a1 - a0 > Math.PI ? -2 * Math.PI : a1 - a0 < -Math.PI ? 2 * Math.PI : 0)) * v }, 0.06)
-      dyn.set(`fridge:${it.id}`, (open) => { st.tgt = open ? 1 : 0 })
-      continue
-    }
-    scene.add(box(x0, z0, x1, z1, 0, h, m))
+    scene.add(assembleFurnishing(it))
+    if (it.type !== "fridge") continue
+    const h = 1800
+    const n = it.rot === 0 ? [0, 1] : it.rot === 90 ? [-1, 0] : it.rot === 180 ? [0, -1] : [1, 0]
+    const t: [number, number] = [-n[1], n[0]]
+    const hx = it.cx + n[0] * (it.d / 2 - 25) - t[0] * (it.w / 2), hz = it.cy + n[1] * (it.d / 2 - 25) - t[1] * (it.w / 2)
+    const pivot = new THREE.Group()
+    pivot.position.set(hx * M, 0, hz * M)
+    const door = new THREE.Mesh(new THREE.BoxGeometry(it.w * M, (h - 20) * M, 0.05), mat(0xeef1f3, { metalness: 0.2, roughness: 0.4 }))
+    door.position.set((it.w / 2) * M, (h / 2) * M, 0)
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.5, 0.03), frameM)
+    handle.position.set(it.w * M - 0.06, 1.1, 0.04)
+    pivot.add(door, handle)
+    const a0 = angleOf(t), a1 = angleOf(n)
+    let da = a1 - a0
+    while (da > Math.PI) da -= 2 * Math.PI
+    while (da < -Math.PI) da += 2 * Math.PI
+    pivot.rotation.y = a0
+    scene.add(pivot)
+    const st = { cur: 0, tgt: 0 }
+    lerp(st, (v) => { pivot.rotation.y = a0 + da * v }, 0.06)
+    dyn.set(`fridge:${it.id}`, (open) => { st.tgt = open ? 1 : 0 })
   }
+
   return {
     scene,
     tick: (dt) => { for (const a of anims) a(dt) },

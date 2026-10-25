@@ -219,3 +219,10 @@
 - **原因**：內建漫遊把 SwingDoor.`c`（關閉葉片方向）當外法向 → 出生點進牆卡住；且 assembleFurnishing 細網格 ≠ 遊戲盒子家具，視覺兩套。
 - **家具**：EditorWalk／`layoutFromBlueprint` 用 type→slot 對照；scheme 空則讀 GAME_FURNISH_KEY，再空則 `autoFurnish`（與系統配置同套）。
 - **鳥瞰 3D**：仍用詳細家具網格（編輯用途）；只有「進去走走／漫遊」統一遊戲風格。
+
+## D-29 · 全模式家具視覺統一為編輯器細網格（M9）
+- **決定**：系統配置預覽→漫遊、編輯器鳥瞰→漫遊，家具外觀一律用 `assembleFurnishing`（編輯器細網格）。不再在漫遊裡畫遊戲方塊家具。
+- **反轉 D-28 家具觀感**：D-28 仍保留「漫遊走 PlayScreen／`#/walk`／碰撞／出生點」；但家具視覺改回編輯器為唯一來源（`src/scene3d/assembleFurnishing.ts`），planStudio 與 `buildScene` 共用。
+- **擺放來源**：系統配置仍 `autoFurnish`（寫入 scheme／GAME_FURNISH_KEY）；編輯器仍讀 scheme（空則 GAME_FURNISH → autoFurnish）。同一批 type／尺寸／座標進細網格。
+- **冰箱**：漫遊仍可 E 開關（碰撞走 walk.ts）；門片動畫疊在細網格正面上作回饋。
+- **不做**：不改上傳辨識／floorplan-rw-seg.pt；不改 2D SVG 符號（系統配置 PlanPreview 仍為色塊頂視，與編輯器 2D 圖示不同，但 3D 一致）。

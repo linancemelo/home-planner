@@ -1,6 +1,5 @@
 /**
- * Three.js scene lives inside `studio/engine/planStudio.ts` for Phase 1
- * (shared mutable plan state with the 2D SVG engine). Furniture meshes are
- * built by `assembleFurnishing` (renamed from upstream `buildFurniture`).
+ * Shared Three.js furniture meshes for editor bird's-eye and game walk.
+ * `assembleFurnishing` is the single visual source of truth (D-29).
  */
-export {}
+export { assembleFurnishing, setFurnishingEnv, type FurnishItem } from "./assembleFurnishing.ts"

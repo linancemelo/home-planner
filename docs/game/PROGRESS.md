@@ -99,3 +99,8 @@
 - 根因：`setMode` 的 `if (anim) return` 擋 walk；浮層只 click 漫遊鈕且按鈕恆在 DOM → 無 fallback。
 - 修：`walk` 先於 anim（`anim=null` 後導 `#/walk`）；浮層 click 後若 hash 仍非 walk → `go("walk")`。
 - 驗證：build OK；邏輯 smoke；headless：2D／anim 中「進去走走」→ `#/walk`；3D「漫遊」→ `#/walk`。
+
+## M9 · 全模式編輯器家具（未 commit）
+- 根因：D-28 故意讓漫遊用 `buildScene` 方塊家具，與編輯器 `assembleFurnishing` 細網格兩套外觀。
+- 修：抽出 `src/scene3d/assembleFurnishing.ts`；`buildScene` 改畫細網格；planStudio 鳥瞰改呼叫同一模組（OX/OY 原點）。
+- 驗證：build OK；test:furnish 264/0；test:walk 264/0；m9-smoke（fid 數＝件數、spawn blocked=false、床網格 children≥3）；未 commit／push。
